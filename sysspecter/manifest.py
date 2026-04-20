@@ -48,6 +48,11 @@ def build_run_manifest(paths: RunPaths, config: Config) -> dict[str, Any]:
         "python_version": sys.version,
         "python_executable": sys.executable,
         "thresholds": config.thresholds.__dict__,
+        "phase3": {
+            "gpu": config.enable_gpu,
+            "event_logs": config.enable_event_logs,
+            "etw_disk": config.enable_etw_disk,
+        },
     }
 
 

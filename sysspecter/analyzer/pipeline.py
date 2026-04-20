@@ -10,7 +10,12 @@ from ..logging_setup import get_logger
 from ..reporter.json_export import atomic_write_json
 from .anomalies import detect_anomalies
 from .bottlenecks import classify_bottlenecks
+from .grouping import rank_apps
 from .leaks import detect_leak_patterns
+from .network_attribution import attribute_connections
+from .latency_analysis import analyze_latency
+from .gpu_analysis import analyze_gpu
+from .event_correlation import correlate_events
 from .loader import load_run
 from .offenders import rank_offenders, process_churn_stats
 from .scores import calculate_scores
@@ -39,7 +44,38 @@ def analyze_run(run_dir: str) -> dict[str, Any]:
 
     logger.info("ranking offenders")
     offenders = rank_offenders(rd.process_rows, top_n=10)
+    apps = rank_apps(rd.process_rows, top_n=10)
     churn = process_churn_stats(rd.process_events)
+
+    logger.info("attributing network connections")
+    network_attribution = attribute_connections(rd.connection_rows, top_n=10)
+
+    logger.info("analyzing latency / DNS")
+    latency_analysis = analyze_latency(rd.latency_rows)
+
+    # Phase 3 optional analyses — keyed off manifest.phase3 + presence of data
+    phase3_cfg = (rd.manifest or {}).get("phase3") or {}
+    gpu_analysis: dict[str, Any] = {"enabled": False}
+    if phase3_cfg.get("gpu") or rd.gpu_engine_rows or rd.gpu_process_rows:
+        logger.info("analyzing GPU metrics")
+        pid_name_map: dict[int, str] = {}
+        for pr in rd.process_rows:
+            try:
+                pid = int(pr.get("pid") or 0)
+            except (TypeError, ValueError):
+                pid = 0
+            if pid > 0:
+                pid_name_map.setdefault(pid, pr.get("name") or "?")
+        gpu_analysis = analyze_gpu(
+            rd.gpu_engine_rows, rd.gpu_process_rows, rd.gpu_adapter_rows, pid_name_map,
+        )
+
+    event_correlation: dict[str, Any] = {"enabled": False}
+    if phase3_cfg.get("event_logs") or rd.event_log:
+        logger.info("correlating event logs to slowdowns")
+        event_correlation = correlate_events(rd.event_log, slowdowns)
+
+    etw_disk = rd.etw_disk or {"enabled": False}
 
     logger.info("classifying bottlenecks")
     bottlenecks = classify_bottlenecks(rd.system_rows, anomalies, rd.latency_rows, slowdowns)
@@ -55,6 +91,12 @@ def analyze_run(run_dir: str) -> dict[str, Any]:
         "slowdowns": slowdowns,
         "leaks": leaks,
         "offenders": offenders,
+        "apps": apps,
+        "network_attribution": network_attribution,
+        "latency_analysis": latency_analysis,
+        "gpu_analysis": gpu_analysis,
+        "event_correlation": event_correlation,
+        "etw_disk": etw_disk,
         "process_churn": churn,
         "bottlenecks": bottlenecks,
         "summary": _summarize(anomalies, slowdowns, leaks, bottlenecks, scores),

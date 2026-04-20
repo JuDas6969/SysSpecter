@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import signal
+import sys
 import time
 from typing import Any
 
@@ -27,6 +28,7 @@ from ..manifest import build_run_manifest, write_manifest, update_manifest_end
 from ..paths import build_run_paths
 from ..reporter.csv_export import (
     StreamingCSV, SYSTEM_FIELDS, PROCESS_FIELDS, NETWORK_FIELDS, LATENCY_FIELDS,
+    CONNECTIONS_FIELDS, GPU_ENGINE_FIELDS, GPU_PROCESS_FIELDS, GPU_ADAPTER_FIELDS,
 )
 from ..reporter.json_export import atomic_write_json
 from .static import (
@@ -43,6 +45,15 @@ from .network_sampler import collect_network_sample, sample_to_dict as net_sampl
 from .latency_sampler import collect_latency_sample, sample_to_dict as lat_sample_to_dict
 from .service_sampler import refresh_and_diff_services
 from .process_diff import diff_process_snapshot
+from .connections_sampler import (
+    collect_connection_snapshot, sample_to_dict as conn_sample_to_dict,
+)
+from .gpu_sampler import (
+    collect_gpu_snapshot, engine_to_dict as gpu_engine_to_dict,
+    proc_to_dict as gpu_proc_to_dict, adapter_to_dict as gpu_adapter_to_dict,
+)
+from .eventlog import collect_event_log_for_window
+from .etw import EtwDiskSession
 
 
 _stop_requested = False
@@ -73,7 +84,7 @@ def run_monitor(config: Config) -> str:
 
     paths = build_run_paths(config.output_root)
     logger = get_logger("collector", paths.collector_log)
-    logger.info("pcb starting run=%s mode=%s duration=%s interval=%.2fs tags=%s",
+    logger.info("sysspecter starting run=%s mode=%s duration=%s interval=%.2fs tags=%s",
                 paths.run_id, config.mode, config.duration, config.interval, config.tags)
 
     manifest = build_run_manifest(paths, config)
@@ -108,10 +119,32 @@ def run_monitor(config: Config) -> str:
     process_csv = StreamingCSV(paths.timeline_processes_csv, PROCESS_FIELDS)
     network_csv = StreamingCSV(paths.timeline_network_csv, NETWORK_FIELDS)
     latency_csv = StreamingCSV(paths.timeline_latency_csv, LATENCY_FIELDS)
+    connections_csv = StreamingCSV(paths.timeline_connections_csv, CONNECTIONS_FIELDS)
     system_csv.open()
     process_csv.open()
     network_csv.open()
     latency_csv.open()
+    connections_csv.open()
+
+    # Phase 3 optional streams
+    gpu_engine_csv = gpu_process_csv = gpu_adapter_csv = None
+    if config.enable_gpu:
+        gpu_engine_csv = StreamingCSV(paths.timeline_gpu_engine_csv, GPU_ENGINE_FIELDS)
+        gpu_process_csv = StreamingCSV(paths.timeline_gpu_process_csv, GPU_PROCESS_FIELDS)
+        gpu_adapter_csv = StreamingCSV(paths.timeline_gpu_adapter_csv, GPU_ADAPTER_FIELDS)
+        gpu_engine_csv.open()
+        gpu_process_csv.open()
+        gpu_adapter_csv.open()
+        logger.info("Phase 3: GPU metrics enabled")
+
+    etw_session: EtwDiskSession | None = None
+    if config.enable_etw_disk:
+        etw_session = EtwDiskSession(paths.etw_etl, logger=logger)
+        if not etw_session.start():
+            logger.warning("Phase 3: ETW disk session could not be started (admin required?)")
+            etw_session = None
+        else:
+            logger.info("Phase 3: ETW disk capture started")
 
     process_events: list[dict[str, Any]] = []
     service_events: list[dict[str, Any]] = []
@@ -124,9 +157,12 @@ def run_monitor(config: Config) -> str:
     next_expensive = started_mono + EXPENSIVE_COLLECTOR_INTERVAL
     next_latency = started_mono + 5.0  # first latency probe shortly after start
     next_flush = started_mono + 10.0
+    next_heartbeat = started_mono + 2.0
 
     stop_reason = "completed"
     sample_count = 0
+
+    _print_start_banner(paths, config)
 
     try:
         while True:
@@ -182,6 +218,24 @@ def run_monitor(config: Config) -> str:
                 if svc_events:
                     service_events.extend(svc_events)
 
+                try:
+                    conn_samples = collect_connection_snapshot(started_mono)
+                    connections_csv.write_many([conn_sample_to_dict(c) for c in conn_samples])
+                except Exception as e:
+                    logger.warning("connection snapshot failed: %s", e)
+
+                if config.enable_gpu and gpu_engine_csv is not None:
+                    try:
+                        eng, proc_gpu, adp = collect_gpu_snapshot(started_mono, logger)
+                        if eng:
+                            gpu_engine_csv.write_many([gpu_engine_to_dict(e) for e in eng])
+                        if proc_gpu:
+                            gpu_process_csv.write_many([gpu_proc_to_dict(p) for p in proc_gpu])
+                        if adp:
+                            gpu_adapter_csv.write_many([gpu_adapter_to_dict(a) for a in adp])
+                    except Exception as e:
+                        logger.warning("gpu snapshot failed: %s", e)
+
                 next_expensive = now + EXPENSIVE_COLLECTOR_INTERVAL
 
             if now >= next_flush:
@@ -189,7 +243,16 @@ def run_monitor(config: Config) -> str:
                 process_csv.flush()
                 network_csv.flush()
                 latency_csv.flush()
+                connections_csv.flush()
+                if gpu_engine_csv is not None:
+                    gpu_engine_csv.flush()
+                    gpu_process_csv.flush()
+                    gpu_adapter_csv.flush()
                 next_flush = now + 10.0
+
+            if now >= next_heartbeat:
+                _print_heartbeat(rel, config.duration, sys_sample)
+                next_heartbeat = now + 5.0
 
             sample_count += 1
 
@@ -207,10 +270,16 @@ def run_monitor(config: Config) -> str:
         logger.exception("collector loop crashed: %s", e)
         stop_reason = f"error:{type(e).__name__}"
     finally:
+        _print_stopping(stop_reason)
         system_csv.close()
         process_csv.close()
         network_csv.close()
         latency_csv.close()
+        connections_csv.close()
+        if gpu_engine_csv is not None:
+            gpu_engine_csv.close()
+            gpu_process_csv.close()
+            gpu_adapter_csv.close()
 
         end_mono = time.monotonic()
         actual_duration = end_mono - started_mono
@@ -221,8 +290,25 @@ def run_monitor(config: Config) -> str:
         atomic_write_json(paths.process_events, process_events)
         atomic_write_json(paths.service_events, service_events)
 
+        if etw_session is not None:
+            try:
+                logger.info("Phase 3: stopping ETW capture and summarizing")
+                summary = etw_session.stop_and_summarize(paths.etw_etl)
+                atomic_write_json(paths.etw_disk_summary, summary)
+            except Exception as e:
+                logger.warning("Phase 3: ETW finalize failed: %s", e)
+
+        if config.enable_event_logs:
+            try:
+                logger.info("Phase 3: querying Windows event logs for run window")
+                evs = collect_event_log_for_window(started_wall, time.time(), logger=logger)
+                atomic_write_json(paths.event_log_json, evs)
+            except Exception as e:
+                logger.warning("Phase 3: event log collection failed: %s", e)
+
         update_manifest_end(paths.manifest, ended_at, stop_reason, actual_duration)
 
+    print("  Analysiere Daten und baue Report...", flush=True)
     logger.info("running analysis + reports...")
     try:
         from ..analyzer.pipeline import analyze_run
@@ -236,4 +322,105 @@ def run_monitor(config: Config) -> str:
     except Exception as e:
         logger.exception("reporter failed: %s", e)
 
+    _print_done_banner(paths.run_dir, actual_duration, sample_count)
     return paths.run_dir
+
+
+# --- DAU-friendly console output -------------------------------------------
+
+def _print_start_banner(paths, config) -> None:
+    mode = config.mode
+    if config.duration is None:
+        dur_text = "manueller Stopp (Ctrl+C oder 'sysspecter.bat stop')"
+    else:
+        mins = config.duration // 60
+        secs = config.duration % 60
+        dur_text = f"{config.duration}s ({mins}m {secs}s)"
+    phase3 = []
+    if config.enable_gpu:
+        phase3.append("GPU")
+    if config.enable_event_logs:
+        phase3.append("EventLog")
+    if config.enable_etw_disk:
+        phase3.append("ETW")
+    phase3_text = ("  Phase 3: " + ", ".join(phase3)) if phase3 else ""
+
+    bar = "=" * 68
+    print()
+    print(bar)
+    print("  SysSpecter  -  See everything. Find the cause.")
+    print(bar)
+    print(f"  Modus:     {mode}")
+    print(f"  Dauer:     {dur_text}")
+    print(f"  Ausgabe:   {paths.run_dir}")
+    if phase3_text:
+        print(phase3_text)
+    print(bar)
+    print("  >> Zum STOPPEN (eine der beiden Varianten):")
+    print("     1) Ctrl+C in diesem Fenster druecken")
+    print("     2) In einem zweiten Fenster:  sysspecter.bat stop")
+    print("     Der Report wird danach automatisch gebaut.")
+    print(bar, flush=True)
+
+
+def _fmt_elapsed(rel: float) -> str:
+    s = int(rel)
+    h, rem = divmod(s, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h:d}h{m:02d}m{s:02d}s"
+    return f"{m:02d}m{s:02d}s"
+
+
+def _print_heartbeat(rel: float, duration: int | None, sys_sample) -> None:
+    elapsed = _fmt_elapsed(rel)
+    if duration is None:
+        progress = "manueller Stopp"
+    else:
+        pct = min(100.0, 100.0 * rel / duration)
+        progress = f"{pct:5.1f}% von {duration}s"
+    cpu = getattr(sys_sample, "cpu_total_pct", 0.0) or 0.0
+    mem = getattr(sys_sample, "mem_percent", 0.0) or 0.0
+    try:
+        msg = (f"  [laeuft] {elapsed}  {progress}  "
+               f"CPU {cpu:5.1f}%  RAM {mem:5.1f}%   (Ctrl+C = stoppen)")
+    except Exception:
+        msg = f"  [laeuft] {elapsed}  (Ctrl+C = stoppen)"
+    # Overwrite the same line in-place if stdout is a TTY, else newline
+    if sys.stdout.isatty():
+        sys.stdout.write("\r" + msg.ljust(90))
+        sys.stdout.flush()
+    else:
+        print(msg, flush=True)
+
+
+def _print_stopping(reason: str) -> None:
+    reason_map = {
+        "keyboard_interrupt": "Stopp durch Ctrl+C",
+        "manual_stop_signal": "Stopp-Signal empfangen",
+        "manual_stop_sentinel": "STOP-Datei gefunden",
+        "duration_reached": "Zeit abgelaufen",
+        "completed": "fertig",
+    }
+    text = reason_map.get(reason, reason)
+    if sys.stdout.isatty():
+        sys.stdout.write("\n")
+    print()
+    print("=" * 68)
+    print(f"  Wird beendet ({text}). Schreibe Daten ab, bitte warten...")
+    print("=" * 68, flush=True)
+
+
+def _print_done_banner(run_dir: str, actual_duration: float, samples: int) -> None:
+    report = os.path.join(run_dir, "final_report.html")
+    bar = "=" * 68
+    print()
+    print(bar)
+    print("  Fertig!")
+    print(bar)
+    print(f"  Gemessen:  {_fmt_elapsed(actual_duration)}  ({samples} Samples)")
+    print(f"  Report:    {report}")
+    print()
+    print("  Oeffnen mit:")
+    print(f"     start {report}")
+    print(bar, flush=True)

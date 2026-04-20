@@ -44,6 +44,25 @@ NETWORK_FIELDS = [
 LATENCY_FIELDS = [
     "timestamp", "rel_seconds", "target", "count",
     "avg_ms", "min_ms", "max_ms", "jitter_ms", "loss_pct", "raw_times_ms",
+    "hostname_resolved", "resolve_ms",
+]
+
+CONNECTIONS_FIELDS = [
+    "timestamp", "rel_seconds", "pid", "name",
+    "laddr", "raddr", "status", "type",
+]
+
+GPU_ENGINE_FIELDS = [
+    "timestamp", "rel_seconds", "engine_type", "luid", "utilization_pct",
+]
+
+GPU_PROCESS_FIELDS = [
+    "timestamp", "rel_seconds", "pid", "dedicated_bytes", "shared_bytes",
+]
+
+GPU_ADAPTER_FIELDS = [
+    "timestamp", "rel_seconds", "adapter",
+    "temperature_c", "power_w", "mem_used_mb", "mem_total_mb", "utilization_pct",
 ]
 
 

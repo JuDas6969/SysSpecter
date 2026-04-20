@@ -49,6 +49,52 @@ def linear_regression_slope(xs: list[float], ys: list[float]) -> float | None:
     return num / den
 
 
+def linear_regression_r2(xs: list[float], ys: list[float]) -> float | None:
+    """Coefficient of determination R^2 for the best-fit line. In [0, 1]."""
+    n = len(xs)
+    if n < 2 or n != len(ys):
+        return None
+    mean_x = sum(xs) / n
+    mean_y = sum(ys) / n
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    den_x = sum((x - mean_x) ** 2 for x in xs)
+    den_y = sum((y - mean_y) ** 2 for y in ys)
+    if den_x == 0 or den_y == 0:
+        return None
+    slope = num / den_x
+    intercept = mean_y - slope * mean_x
+    ss_res = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(xs, ys))
+    ss_tot = den_y
+    return max(0.0, 1.0 - ss_res / ss_tot)
+
+
+def monotonic_nondecreasing_ratio(values: list[float]) -> float:
+    """Fraction of adjacent pairs where v[i+1] >= v[i]. 1.0 = strictly monotonic growth."""
+    if len(values) < 2:
+        return 0.0
+    pairs = len(values) - 1
+    ok = sum(1 for i in range(pairs) if values[i + 1] >= values[i])
+    return ok / pairs
+
+
+def plateau_fraction(values: list[float], tolerance_ratio: float = 0.02) -> float:
+    """Fraction of the series, measured from the end, whose values stay within
+    `tolerance_ratio` of the final value. High plateau => not a leak; growth stopped."""
+    if len(values) < 2:
+        return 0.0
+    final = values[-1]
+    if final <= 0:
+        return 0.0
+    tol = abs(final) * tolerance_ratio
+    n = 0
+    for v in reversed(values):
+        if abs(v - final) <= tol:
+            n += 1
+        else:
+            break
+    return n / len(values)
+
+
 def mean(values: Iterable[float]) -> float | None:
     lst = list(values)
     if not lst:

@@ -4,6 +4,7 @@ See everything. Find the cause.
 
 Main launcher. Subcommands:
     monitor   — run a monitoring session (support/baseline/workload mode)
+    stop      — stop the currently running monitor session (STOP sentinel)
     compare   — compare multiple completed runs
     report    — rebuild reports from an existing run folder
     inspect   — quick console summary of a completed run
@@ -52,12 +53,28 @@ def _build_parser() -> argparse.ArgumentParser:
     m.add_argument("--manual-stop", action="store_true",
                    help="Force manual-stop mode even in baseline/workload")
 
+    m.add_argument("--gpu", action="store_true",
+                   help="Phase 3: sample GPU engine/memory counters (optional)")
+    m.add_argument("--event-logs", action="store_true", dest="event_logs",
+                   help="Phase 3: query Windows event logs for the run window (optional)")
+    m.add_argument("--etw", action="store_true",
+                   help="Phase 3: capture kernel disk-I/O ETW trace for per-process "
+                        "byte attribution (admin required; optional)")
+    m.add_argument("--phase3", action="store_true",
+                   help="Enable all Phase 3 optional collectors: --gpu --event-logs --etw")
+
     c = sub.add_parser("compare", help="Compare multiple completed runs")
     c.add_argument("--runs", nargs="+", default=None,
                    help="Explicit list of run folders to compare")
     c.add_argument("--input", default=None,
                    help="Auto-discover runs under this folder (e.g. C:\\Temp\\SysSpecter\\Runs)")
     c.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
+
+    s = sub.add_parser("stop", help="Stop the active monitor run (creates STOP sentinel)")
+    s.add_argument("--run", default=None,
+                   help="Specific run folder to stop. Default: auto-detect the latest active run.")
+    s.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT,
+                   help="Root folder to search for active runs (default: %(default)s)")
 
     r = sub.add_parser("report", help="Rebuild reports from an existing run")
     r.add_argument("--run", required=True, help="Path to a run folder")
@@ -97,9 +114,11 @@ def _cmd_monitor(args: argparse.Namespace) -> int:
         tags=list(args.tags or []),
         latency_targets=list(args.latency_targets) if args.latency_targets else list(DEFAULT_LATENCY_TARGETS),
         manual_stop=args.manual_stop or (args.mode == "support" and args.duration is None),
+        enable_gpu=args.gpu or args.phase3,
+        enable_event_logs=args.event_logs or args.phase3,
+        enable_etw_disk=args.etw or args.phase3,
     )
-    run_dir = run_monitor(config)
-    print(f"Run complete. Artifacts: {run_dir}")
+    run_monitor(config)
     return 0
 
 
@@ -132,6 +151,85 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _find_active_run(output_root: str, freshness_seconds: float = 30.0) -> str | None:
+    """Return the path of the currently running monitor session.
+
+    A run is considered "active" when its collector.log was written to within
+    the last `freshness_seconds`. This avoids targeting stale folders from
+    previous runs that were killed without finalizing.
+    """
+    import time
+
+    runs_root = os.path.join(output_root, "Runs")
+    if not os.path.isdir(runs_root):
+        return None
+    now = time.time()
+    candidates: list[tuple[float, str, bool]] = []
+    for name in os.listdir(runs_root):
+        folder = os.path.join(runs_root, name)
+        if not os.path.isdir(folder):
+            continue
+        if not os.path.exists(os.path.join(folder, "manifest.json")):
+            continue
+        if os.path.exists(os.path.join(folder, "final_report.html")):
+            continue
+        log = os.path.join(folder, "logs", "collector.log")
+        try:
+            log_mtime = os.path.getmtime(log)
+        except OSError:
+            continue
+        if now - log_mtime > freshness_seconds:
+            continue
+        has_stop = os.path.exists(os.path.join(folder, "STOP"))
+        candidates.append((log_mtime, folder, has_stop))
+    if not candidates:
+        return None
+    fresh = [c for c in candidates if not c[2]]
+    pool = fresh or candidates
+    pool.sort(key=lambda c: c[0], reverse=True)
+    return pool[0][1]
+
+
+def _cmd_stop(args: argparse.Namespace) -> int:
+    if args.run:
+        run = os.path.abspath(args.run)
+        if not os.path.isdir(run):
+            print(f"error: not a directory: {run}", file=sys.stderr)
+            return 2
+    else:
+        run = _find_active_run(args.output_root)
+        if run is None:
+            print(f"Keine aktive Session gefunden unter {os.path.join(args.output_root, 'Runs')}.",
+                  file=sys.stderr)
+            print("Tipp: Starte zuerst 'sysspecter.bat monitor ...' in einem anderen Fenster.",
+                  file=sys.stderr)
+            return 1
+
+    stop_file = os.path.join(run, "STOP")
+    if os.path.exists(stop_file):
+        print(f"STOP-Datei existiert bereits: {stop_file}")
+        print("Die laufende Session sollte sich jeden Moment beenden.")
+        return 0
+
+    try:
+        with open(stop_file, "w", encoding="utf-8") as f:
+            f.write("stop\n")
+    except OSError as e:
+        print(f"error: STOP-Datei konnte nicht angelegt werden: {e}", file=sys.stderr)
+        return 1
+
+    print("============================================================")
+    print(" Stopp-Signal gesendet")
+    print("============================================================")
+    print(f" Run:  {run}")
+    print(f" Datei: {stop_file}")
+    print()
+    print(" Die laufende Session wird in wenigen Sekunden beendet")
+    print(" und erstellt automatisch den Abschlussbericht.")
+    print("============================================================")
+    return 0
+
+
 def _cmd_report(args: argparse.Namespace) -> int:
     from sysspecter.reporter.html_report import regenerate_report
 
@@ -159,6 +257,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "monitor":
         return _cmd_monitor(args)
+    if args.command == "stop":
+        return _cmd_stop(args)
     if args.command == "compare":
         return _cmd_compare(args)
     if args.command == "report":

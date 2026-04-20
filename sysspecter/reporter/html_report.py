@@ -13,7 +13,7 @@ from ..analyzer.pipeline import analyze_run
 from ..logging_setup import get_logger
 from .json_export import atomic_write_json, load_json
 from .markdown_report import generate_markdown_summary
-from .svg_charts import line_chart, heatmap
+from .svg_charts import heatmap, line_chart, stacked_area_chart
 
 
 _CSS = """
@@ -151,6 +151,10 @@ _TEMPLATE = """<!DOCTYPE html>
   <div>{{ disk_chart | safe }}</div>
   <div>{{ net_chart | safe }}</div>
   <div>{{ heatmap_svg | safe }}</div>
+  {% if disk_stack_chart %}<div>{{ disk_stack_chart | safe }}</div>{% endif %}
+  {% if net_stack_chart %}<div>{{ net_stack_chart | safe }}</div>{% endif %}
+  {% if app_cpu_stack_chart %}<div>{{ app_cpu_stack_chart | safe }}</div>{% endif %}
+  {% if app_rss_stack_chart %}<div>{{ app_rss_stack_chart | safe }}</div>{% endif %}
   {% if latency_chart %}<div>{{ latency_chart | safe }}</div>{% endif %}
   {% if top_processes_chart %}<div>{{ top_processes_chart | safe }}</div>{% endif %}
 </div>
@@ -208,7 +212,37 @@ _TEMPLATE = """<!DOCTYPE html>
   {% endif %}
 </div>
 
-<h2>Offenders</h2>
+<h2>Top applications <span class="small">(PIDs grouped)</span></h2>
+<div class="card">
+{% if findings.apps and findings.apps.top_cpu %}
+{% for label, title in app_sections %}
+  {% set items = findings.apps[label] %}
+  {% if items %}
+  <h3>{{ title }}</h3>
+  <table><thead><tr>
+    <th>application</th><th>PIDs</th><th>cpu avg %</th><th>cpu peak %</th><th>rss peak MB</th>
+    <th>handles peak</th><th>threads peak</th><th>io avg B/s</th>
+  </tr></thead><tbody>
+  {% for i in items %}
+  <tr>
+    <td>{% if i.is_target %}<b>{{ i.display_name }}</b>{% else %}{{ i.display_name }}{% endif %}
+        <span class="small">({{ i.app_key }})</span></td>
+    <td>{{ i.pid_count }}</td>
+    <td>{{ i.cpu_pct_avg }}</td><td>{{ i.cpu_pct_max }}</td>
+    <td>{{ i.rss_mb_max }}</td>
+    <td>{{ i.num_handles_max }}</td>
+    <td>{{ i.num_threads_max }}</td>
+    <td>{{ ((i.io_read_bps_avg or 0) + (i.io_write_bps_avg or 0))|round(0) }}</td>
+  </tr>
+  {% endfor %}</tbody></table>
+  {% endif %}
+{% endfor %}
+{% else %}
+<p class="small">No per-app aggregates available.</p>
+{% endif %}
+</div>
+
+<h2>Offenders <span class="small">(per-PID)</span></h2>
 <div class="card">
 {% for label, title in offender_sections %}
   {% set items = findings.offenders[label] %}
@@ -231,6 +265,220 @@ _TEMPLATE = """<!DOCTYPE html>
   {% endfor %}</tbody></table>
   {% endif %}
 {% endfor %}
+</div>
+
+<h2>Network attribution <span class="small">(connection-based)</span></h2>
+<div class="card">
+{% if findings.network_attribution and findings.network_attribution.by_app %}
+<p class="small">Captured {{ findings.network_attribution.samples }} connection snapshot(s).
+  Byte-level per-process attribution is not available via psutil on Windows — counts below are
+  based on which processes owned TCP/UDP sockets at snapshot time.</p>
+<h3>By application</h3>
+<table><thead><tr>
+  <th>application</th><th>PIDs</th><th>avg conns</th>
+  <th>unique remotes</th><th>tcp %</th><th>udp %</th><th>top remote hosts</th>
+</tr></thead><tbody>
+{% for a in findings.network_attribution.by_app %}
+<tr>
+  <td>{{ a.display_name }} <span class="small">({{ a.app_key }})</span></td>
+  <td>{{ a.pid_count }}</td>
+  <td>{{ a.avg_concurrent_conns }}</td>
+  <td>{{ a.unique_remote_count }}</td>
+  <td>{{ a.tcp_share_pct }}</td>
+  <td>{{ a.udp_share_pct }}</td>
+  <td class="small">{% for r in a.top_remotes %}{{ r.host }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+<h3>By PID</h3>
+<table><thead><tr>
+  <th>pid</th><th>name</th><th>avg conns</th>
+  <th>unique remotes</th><th>tcp %</th><th>udp %</th><th>top remote hosts</th>
+</tr></thead><tbody>
+{% for p in findings.network_attribution.by_pid %}
+<tr>
+  <td>{{ p.pid }}</td>
+  <td>{{ p.name }}</td>
+  <td>{{ p.avg_concurrent_conns }}</td>
+  <td>{{ p.unique_remote_count }}</td>
+  <td>{{ p.tcp_share_pct }}</td>
+  <td>{{ p.udp_share_pct }}</td>
+  <td class="small">{% for r in p.top_remotes %}{{ r.host }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% else %}
+<p class="small">No connection snapshots captured (run too short, or no privilege to enumerate sockets).</p>
+{% endif %}
+</div>
+
+<h2>Latency &amp; DNS</h2>
+<div class="card">
+{% if findings.latency_analysis and findings.latency_analysis.targets %}
+<p class="small">Per-target summary of ICMP round-trip time, jitter, packet loss, and
+  DNS resolution latency ({{ findings.latency_analysis.samples }} sample rows).</p>
+<table><thead><tr>
+  <th>target</th><th>resolved</th><th>samples</th>
+  <th>loss %</th><th>rtt avg ms</th><th>rtt p95 ms</th><th>rtt max ms</th>
+  <th>jitter avg ms</th>
+  <th>dns avg ms</th><th>dns p95 ms</th><th>dns max ms</th><th>dns fail %</th>
+</tr></thead><tbody>
+{% for t in findings.latency_analysis.targets %}
+<tr>
+  <td>{{ t.target }}</td>
+  <td class="small">{{ t.hostname_resolved or '—' }}</td>
+  <td>{{ t.samples }}</td>
+  <td>{{ t.loss_rate_pct }}</td>
+  <td>{{ t.rtt_avg_ms if t.rtt_avg_ms is not none else '—' }}</td>
+  <td>{{ t.rtt_p95_ms if t.rtt_p95_ms is not none else '—' }}</td>
+  <td>{{ t.rtt_max_ms if t.rtt_max_ms is not none else '—' }}</td>
+  <td>{{ t.jitter_avg_ms if t.jitter_avg_ms is not none else '—' }}</td>
+  <td>{{ t.resolve_avg_ms if t.resolve_avg_ms is not none else '—' }}</td>
+  <td>{{ t.resolve_p95_ms if t.resolve_p95_ms is not none else '—' }}</td>
+  <td>{{ t.resolve_max_ms if t.resolve_max_ms is not none else '—' }}</td>
+  <td>{{ t.resolve_fail_rate_pct }}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% if findings.latency_analysis.dns_findings %}
+<h3>DNS findings</h3>
+<ul>
+{% for f in findings.latency_analysis.dns_findings %}
+  <li><strong>{{ f.severity }}</strong> — {{ f.target }}: {{ f.detail }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+{% else %}
+<p class="small">No latency samples captured.</p>
+{% endif %}
+</div>
+
+<h2>GPU metrics <span class="small">(Phase 3 — optional)</span></h2>
+<div class="card">
+{% if findings.gpu_analysis and findings.gpu_analysis.enabled %}
+  <p class="small">{{ findings.gpu_analysis.samples }} GPU samples captured.</p>
+  {% if findings.gpu_analysis.engines %}
+  <h3>Engines</h3>
+  <table><thead><tr>
+    <th>engine</th><th>luid</th><th>avg %</th><th>peak %</th><th>samples</th>
+  </tr></thead><tbody>
+  {% for e in findings.gpu_analysis.engines %}
+  <tr><td>{{ e.engine_type }}</td><td class="small">{{ e.luid }}</td>
+      <td>{{ e.avg_pct }}</td><td>{{ e.peak_pct }}</td><td>{{ e.samples }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% endif %}
+  {% if findings.gpu_analysis.top_apps %}
+  <h3>Top apps by GPU memory</h3>
+  <table><thead><tr>
+    <th>application</th><th>PIDs</th><th>dedicated peak MB</th>
+    <th>dedicated avg MB</th><th>shared peak MB</th>
+  </tr></thead><tbody>
+  {% for a in findings.gpu_analysis.top_apps %}
+  <tr><td>{{ a.display_name }} <span class="small">({{ a.app_key }})</span></td>
+      <td>{{ a.pid_count }}</td>
+      <td>{{ a.dedicated_peak_mb }}</td>
+      <td>{{ a.dedicated_avg_mb }}</td>
+      <td>{{ a.shared_peak_mb }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% endif %}
+  {% if findings.gpu_analysis.adapters %}
+  <h3>Adapter telemetry (nvidia-smi)</h3>
+  <table><thead><tr>
+    <th>adapter</th><th>temp avg °C</th><th>temp peak °C</th>
+    <th>power avg W</th><th>power peak W</th>
+    <th>mem used avg MB</th><th>mem used peak MB</th>
+    <th>util avg %</th><th>util peak %</th>
+  </tr></thead><tbody>
+  {% for a in findings.gpu_analysis.adapters %}
+  <tr><td>{{ a.adapter }}</td>
+      <td>{{ a.temp_avg_c if a.temp_avg_c is not none else '—' }}</td>
+      <td>{{ a.temp_peak_c if a.temp_peak_c is not none else '—' }}</td>
+      <td>{{ a.power_avg_w if a.power_avg_w is not none else '—' }}</td>
+      <td>{{ a.power_peak_w if a.power_peak_w is not none else '—' }}</td>
+      <td>{{ a.mem_used_avg_mb if a.mem_used_avg_mb is not none else '—' }}</td>
+      <td>{{ a.mem_used_peak_mb if a.mem_used_peak_mb is not none else '—' }}</td>
+      <td>{{ a.util_avg_pct if a.util_avg_pct is not none else '—' }}</td>
+      <td>{{ a.util_peak_pct if a.util_peak_pct is not none else '—' }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% endif %}
+  {% if findings.gpu_analysis.findings %}
+  <h3>GPU findings</h3>
+  <ul>{% for f in findings.gpu_analysis.findings %}
+    <li><strong>{{ f.severity }}</strong> — {{ f.detail }}</li>
+  {% endfor %}</ul>
+  {% endif %}
+{% else %}
+  <p class="small">GPU collection was not enabled for this run (use <code>--gpu</code> or <code>--phase3</code>).</p>
+{% endif %}
+</div>
+
+<h2>Event-log correlation <span class="small">(Phase 3 — optional)</span></h2>
+<div class="card">
+{% if findings.event_correlation and findings.event_correlation.enabled %}
+  <p class="small">{{ findings.event_correlation.count }} relevant events captured.
+    {{ findings.event_correlation.correlated_to_slowdowns }} correlated to slowdown windows (±15 s).</p>
+  {% if findings.event_correlation.by_bucket %}
+  <p class="small">By category:
+    {% for b, c in findings.event_correlation.by_bucket.items() %}
+      <code>{{ b }}</code>: {{ c }}{% if not loop.last %}, {% endif %}
+    {% endfor %}
+  </p>
+  {% endif %}
+  {% if findings.event_correlation.top_events %}
+  <h3>Top events</h3>
+  <table><thead><tr>
+    <th>rel_s</th><th>level</th><th>bucket</th><th>provider</th><th>id</th>
+    <th>message</th><th>in slowdown?</th>
+  </tr></thead><tbody>
+  {% for e in findings.event_correlation.top_events %}
+  <tr><td>{{ e.rel_seconds if e.rel_seconds is not none else '—' }}</td>
+      <td>{{ e.level }}</td>
+      <td>{{ e.bucket }}</td>
+      <td class="small">{{ e.provider }}</td>
+      <td>{{ e.id }}</td>
+      <td class="small">{{ e.message }}</td>
+      <td>{% if e.correlated_slowdowns %}yes ({{ e.correlated_slowdowns | length }}){% else %}—{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+  {% endif %}
+{% else %}
+  <p class="small">Event-log collection was not enabled for this run (use <code>--event-logs</code> or <code>--phase3</code>).</p>
+{% endif %}
+</div>
+
+<h2>ETW disk I/O <span class="small">(Phase 3 — optional, admin required)</span></h2>
+<div class="card">
+{% if findings.etw_disk and findings.etw_disk.enabled %}
+  {% if findings.etw_disk.by_pid %}
+  <p class="small">Per-process disk bytes attributed from kernel ETW trace.
+    This is the only path for true per-process disk-I/O bytes on Windows — psutil cannot provide it.</p>
+  <table><thead><tr>
+    <th>pid</th><th>name</th><th>read MB</th><th>write MB</th>
+    <th>read ops</th><th>write ops</th>
+  </tr></thead><tbody>
+  {% for p in findings.etw_disk.by_pid %}
+  <tr><td>{{ p.pid }}</td><td>{{ p.name }}</td>
+      <td>{{ '%.1f' | format(p.read_bytes / 1048576) }}</td>
+      <td>{{ '%.1f' | format(p.write_bytes / 1048576) }}</td>
+      <td>{{ p.read_ops }}</td><td>{{ p.write_ops }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% if findings.etw_disk.totals %}
+  <p class="small">Totals: {{ '%.1f' | format((findings.etw_disk.totals.read_bytes or 0) / 1048576) }} MB read,
+    {{ '%.1f' | format((findings.etw_disk.totals.write_bytes or 0) / 1048576) }} MB written,
+    {{ findings.etw_disk.totals.events_attributed }}/{{ findings.etw_disk.totals.events_total }} events attributed.</p>
+  {% endif %}
+  {% else %}
+  <p class="small">ETW session ran but no attributable events were parsed
+    ({{ findings.etw_disk.reason or 'unknown' }}).</p>
+  {% endif %}
+{% else %}
+  <p class="small">ETW disk capture was not enabled for this run (use <code>--etw</code> or <code>--phase3</code>; admin required).</p>
+{% endif %}
 </div>
 
 <h2>Bottleneck analysis</h2>
@@ -424,6 +672,108 @@ def _render(
         if series:
             latency_chart = line_chart(series, title="Latency avg (ms)", y_label="ms")
 
+    # Stacked disk read vs write (MB/s)
+    disk_stack_chart = None
+    if system_rows:
+        disk_read = [(float(r.get("disk_read_bytes_per_sec") or 0.0)) / 1024 / 1024 for r in system_rows]
+        disk_write = [(float(r.get("disk_write_bytes_per_sec") or 0.0)) / 1024 / 1024 for r in system_rows]
+        xs_dd, read_ds = _downsample(xs, disk_read)
+        _, write_ds = _downsample(xs, disk_write)
+        if any(read_ds) or any(write_ds):
+            disk_stack_chart = stacked_area_chart(
+                xs_dd,
+                [
+                    {"name": "read MB/s", "ys": read_ds, "color": "#2c7be5"},
+                    {"name": "write MB/s", "ys": write_ds, "color": "#eb2f96"},
+                ],
+                title="Disk throughput stacked (MB/s)", y_label="MB/s",
+            )
+
+    # Stacked network send vs recv (MB/s)
+    net_stack_chart = None
+    if system_rows:
+        xs_dd2, send_ds2 = _downsample(xs, net_send_mb)
+        _, recv_ds2 = _downsample(xs, net_recv_mb)
+        if any(send_ds2) or any(recv_ds2):
+            net_stack_chart = stacked_area_chart(
+                xs_dd2,
+                [
+                    {"name": "sent MB/s", "ys": send_ds2, "color": "#52c41a"},
+                    {"name": "recv MB/s", "ys": recv_ds2, "color": "#13c2c2"},
+                ],
+                title="Network throughput stacked (MB/s)", y_label="MB/s",
+            )
+
+    # Stacked top-N applications by concurrent CPU and RSS
+    app_cpu_stack_chart = None
+    app_rss_stack_chart = None
+    if process_rows:
+        from ..analyzer.grouping import _app_key, _display_name  # local import to avoid cycles
+        ticks: dict[float, dict[str, tuple[float, float]]] = {}
+        for r in process_rows:
+            rel = r.get("rel_seconds")
+            if rel is None:
+                continue
+            key = _app_key(r.get("name"))
+            cpu = float(r.get("cpu_pct") or 0.0)
+            rss = float(r.get("rss_bytes") or 0.0)
+            tick = ticks.setdefault(float(rel), {})
+            prev_cpu, prev_rss = tick.get(key, (0.0, 0.0))
+            tick[key] = (prev_cpu + cpu, prev_rss + rss)
+        app_totals_cpu: dict[str, float] = {}
+        app_totals_rss: dict[str, float] = {}
+        for tick in ticks.values():
+            for key, (cpu, rss) in tick.items():
+                app_totals_cpu[key] = app_totals_cpu.get(key, 0.0) + cpu
+                app_totals_rss[key] = max(app_totals_rss.get(key, 0.0), rss)
+        sorted_ticks = sorted(ticks.keys())
+        palette = ["#2c7be5", "#cf1322", "#52c41a", "#faad14", "#722ed1",
+                   "#eb2f96", "#13c2c2", "#fa541c"]
+
+        def _stack_for(metric_idx: int, totals: dict[str, float], title: str,
+                       y_label: str, divisor: float = 1.0) -> str | None:
+            top_keys = [k for k, _ in sorted(totals.items(), key=lambda kv: kv[1],
+                                              reverse=True) if k != "system idle process"][:6]
+            if not top_keys:
+                return None
+            series_data: list[dict] = []
+            for i, key in enumerate(top_keys):
+                ys = []
+                for t in sorted_ticks:
+                    cpu_rss = ticks[t].get(key, (0.0, 0.0))
+                    ys.append(cpu_rss[metric_idx] / divisor)
+                series_data.append({
+                    "name": _display_name(key),
+                    "ys": ys,
+                    "color": palette[i % len(palette)],
+                })
+            other_ys = []
+            for t in sorted_ticks:
+                rest = 0.0
+                for key, v in ticks[t].items():
+                    if key in top_keys or key == "system idle process":
+                        continue
+                    rest += v[metric_idx] / divisor
+                other_ys.append(rest)
+            if any(other_ys):
+                series_data.append({"name": "other", "ys": other_ys, "color": "#8c8c8c"})
+            xs_full = sorted_ticks
+            if len(xs_full) > 400:
+                factor = len(xs_full) // 400 + 1
+                xs_ds2 = xs_full[::factor]
+                for s in series_data:
+                    s["ys"] = s["ys"][::factor]
+                    # align lengths
+                    s["ys"] = s["ys"][: len(xs_ds2)]
+                xs_full = xs_ds2
+            return stacked_area_chart(xs_full, series_data, title=title, y_label=y_label)
+
+        app_cpu_stack_chart = _stack_for(0, app_totals_cpu,
+                                         "Top apps concurrent CPU (%, stacked)", "%")
+        app_rss_stack_chart = _stack_for(1, app_totals_rss,
+                                         "Top apps concurrent RSS (MB, stacked)", "MB",
+                                         divisor=1024 * 1024)
+
     top_processes_chart = None
     if process_rows:
         by_pid: dict[int, tuple[str, list[float], list[float], float]] = {}
@@ -521,6 +871,13 @@ def _render(
         ("security", "Security-related offenders"),
         ("background_noise", "Background-noise contributors"),
     ]
+    app_sections = [
+        ("top_cpu", "Top CPU applications"),
+        ("top_rss", "Top RAM applications"),
+        ("top_io", "Top I/O applications"),
+        ("top_handles", "Top handle-using applications"),
+        ("top_threads", "Top thread-using applications"),
+    ]
 
     recommendations = _build_recommendations(findings, scores, static)
 
@@ -537,6 +894,10 @@ def _render(
         disk_chart=disk_chart,
         net_chart=net_chart,
         heatmap_svg=heatmap_svg,
+        disk_stack_chart=disk_stack_chart,
+        net_stack_chart=net_stack_chart,
+        app_cpu_stack_chart=app_cpu_stack_chart,
+        app_rss_stack_chart=app_rss_stack_chart,
         latency_chart=latency_chart,
         top_processes_chart=top_processes_chart,
         cpu_name=html.escape(cpu_name),
@@ -545,6 +906,7 @@ def _render(
         power_plan=html.escape(str(power_plan)),
         target_text=html.escape(target_text),
         offender_sections=offender_sections,
+        app_sections=app_sections,
         recommendations=recommendations,
     )
 

@@ -66,3 +66,8 @@ class Config:
     latency_targets: list[str] = field(default_factory=lambda: list(DEFAULT_LATENCY_TARGETS))
     manual_stop: bool = False
     thresholds: Thresholds = field(default_factory=Thresholds)
+
+    # Phase 3 optional collectors (all default off; opt-in via CLI)
+    enable_gpu: bool = False
+    enable_event_logs: bool = False
+    enable_etw_disk: bool = False

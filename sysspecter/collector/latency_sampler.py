@@ -10,11 +10,13 @@ avg/min/max/jitter/loss record. Probe cycle is expensive-tier
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
+import socket
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 CREATE_NO_WINDOW = 0x08000000
@@ -40,6 +42,44 @@ class LatencySample:
     jitter_ms: float | None
     loss_pct: float
     raw_times_ms: list[int]
+    hostname_resolved: str = ""
+    resolve_ms: float | None = None
+
+
+def _is_ip_literal(s: str) -> bool:
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _timed_resolve(target: str) -> tuple[str, float | None]:
+    """Return (hostname_resolved, resolve_ms).
+
+    If target is an IP literal, do a reverse DNS lookup (gethostbyaddr) and
+    report that time. If target is a hostname, do a forward lookup
+    (getaddrinfo) and report that time.
+    """
+    t0 = time.perf_counter()
+    try:
+        if _is_ip_literal(target):
+            host, _, _ = socket.gethostbyaddr(target)
+            name = host
+        else:
+            infos = socket.getaddrinfo(target, None, type=socket.SOCK_STREAM)
+            # pick first IPv4 if any, else first
+            name = ""
+            for fam, _, _, _, sa in infos:
+                if fam == socket.AF_INET:
+                    name = sa[0]
+                    break
+            if not name and infos:
+                name = infos[0][4][0]
+        elapsed = (time.perf_counter() - t0) * 1000.0
+        return name or "", round(elapsed, 2)
+    except (socket.gaierror, socket.herror, OSError):
+        return "", None
 
 
 def _probe_one(target: str, count: int, logger: logging.Logger | None) -> list[int]:
@@ -97,6 +137,7 @@ def collect_latency_sample(
     rel = time.monotonic() - started_mono
     out: list[LatencySample] = []
     for t in targets:
+        hostname_resolved, resolve_ms = _timed_resolve(t)
         times = _probe_one(t, count=count, logger=logger)
         if times:
             avg = sum(times) / len(times)
@@ -121,6 +162,8 @@ def collect_latency_sample(
             jitter_ms=round(jitter, 2) if jitter is not None else None,
             loss_pct=loss,
             raw_times_ms=times,
+            hostname_resolved=hostname_resolved,
+            resolve_ms=resolve_ms,
         ))
     return out
 
@@ -137,4 +180,6 @@ def sample_to_dict(s: LatencySample) -> dict[str, Any]:
         "jitter_ms": s.jitter_ms if s.jitter_ms is not None else "",
         "loss_pct": s.loss_pct,
         "raw_times_ms": ";".join(str(t) for t in s.raw_times_ms),
+        "hostname_resolved": s.hostname_resolved,
+        "resolve_ms": s.resolve_ms if s.resolve_ms is not None else "",
     }

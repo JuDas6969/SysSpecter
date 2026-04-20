@@ -134,13 +134,110 @@ def stacked_area_chart(
     height: int = 240,
     y_label: str = "",
     title: str = "",
+    y_max: float | None = None,
 ) -> str:
-    """series = [{name, ys (same length as xs), color}]."""
-    return line_chart(
-        [{"name": s["name"], "xs": xs, "ys": s["ys"], "color": s.get("color", "#2c7be5")}
-         for s in series],
-        width=width, height=height, y_label=y_label, title=title,
+    """Real stacked-area chart. series = [{name, ys (len == len(xs)), color}].
+
+    Series are stacked bottom-up in list order. The y-axis max defaults to
+    the peak of the stacked total."""
+    pad_l, pad_r, pad_t, pad_b = 55, 140, 30, 30
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+
+    if not xs or not series:
+        return (
+            f'<svg class="pcb-chart" width="{width}" height="{height}">'
+            f'<text x="10" y="20" fill="#888">no data</text></svg>'
+        )
+
+    n = len(xs)
+    cleaned = []
+    for s in series:
+        ys = s.get("ys") or []
+        if len(ys) != n:
+            # pad / truncate
+            ys = (list(ys) + [0.0] * n)[:n]
+        cleaned.append({
+            "name": s.get("name", "?"),
+            "color": s.get("color", "#2c7be5"),
+            "ys": [float(v or 0.0) for v in ys],
+        })
+
+    totals = [0.0] * n
+    for s in cleaned:
+        for i, v in enumerate(s["ys"]):
+            totals[i] += v
+    xmin, xmax = xs[0], xs[-1]
+    if xmax == xmin:
+        xmax = xmin + 1
+    peak = max(totals) if totals else 1.0
+    y_hi = y_max if y_max is not None else (peak * 1.1 if peak > 0 else 1.0)
+    if y_hi <= 0:
+        y_hi = 1.0
+
+    def _px(xv: float) -> float:
+        return _scale(xv, xmin, xmax, pad_l, pad_l + plot_w)
+
+    def _py(yv: float) -> float:
+        return _scale(yv, 0.0, y_hi, pad_t + plot_h, pad_t)
+
+    parts: list[str] = [
+        f'<svg class="pcb-chart" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">'
+    ]
+    if title:
+        parts.append(
+            f'<text x="{width/2}" y="16" text-anchor="middle" font-size="13" '
+            f'font-weight="600" fill="#222">{html.escape(title)}</text>'
+        )
+    parts.append(
+        f'<rect x="{pad_l}" y="{pad_t}" width="{plot_w}" height="{plot_h}" '
+        f'fill="#fafafa" stroke="#ddd"/>'
     )
+    for i in range(5):
+        y = pad_t + plot_h * i / 4
+        v = y_hi - y_hi * i / 4
+        parts.append(
+            f'<line x1="{pad_l}" y1="{y:.1f}" x2="{pad_l+plot_w}" y2="{y:.1f}" stroke="#eee"/>'
+            f'<text x="{pad_l-5}" y="{y+4:.1f}" text-anchor="end" font-size="10" '
+            f'fill="#666">{_fmt(v)}</text>'
+        )
+    for i in range(5):
+        x = pad_l + plot_w * i / 4
+        xv = xmin + (xmax - xmin) * i / 4
+        parts.append(
+            f'<text x="{x:.1f}" y="{pad_t+plot_h+14}" text-anchor="middle" '
+            f'font-size="10" fill="#666">{_fmt(xv)}</text>'
+        )
+    if y_label:
+        parts.append(
+            f'<text transform="rotate(-90 {pad_l-40} {pad_t+plot_h/2})" '
+            f'x="{pad_l-40}" y="{pad_t+plot_h/2}" font-size="11" fill="#444" '
+            f'text-anchor="middle">{html.escape(y_label)}</text>'
+        )
+
+    running = [0.0] * n
+    for s in cleaned:
+        lower = list(running)
+        upper = [lower[i] + s["ys"][i] for i in range(n)]
+        pts_up = [f"{_px(xs[i]):.1f},{_py(upper[i]):.1f}" for i in range(n)]
+        pts_lo = [f"{_px(xs[i]):.1f},{_py(lower[i]):.1f}" for i in range(n - 1, -1, -1)]
+        parts.append(
+            f'<polygon fill="{s["color"]}" fill-opacity="0.78" stroke="{s["color"]}" '
+            f'stroke-width="0.6" points="{" ".join(pts_up + pts_lo)}"/>'
+        )
+        running = upper
+
+    lx = pad_l + plot_w + 10
+    ly = pad_t + 10
+    for s in cleaned:
+        parts.append(
+            f'<rect x="{lx}" y="{ly-9}" width="10" height="10" fill="{s["color"]}" fill-opacity="0.78"/>'
+            f'<text x="{lx+14}" y="{ly}" font-size="10" fill="#333">{html.escape(s["name"])}</text>'
+        )
+        ly += 14
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 def heatmap(

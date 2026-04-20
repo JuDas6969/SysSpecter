@@ -51,6 +51,34 @@ class RunPaths:
         return os.path.join(self.run_dir, "timeline_latency.csv")
 
     @property
+    def timeline_connections_csv(self) -> str:
+        return os.path.join(self.run_dir, "timeline_connections.csv")
+
+    @property
+    def timeline_gpu_engine_csv(self) -> str:
+        return os.path.join(self.run_dir, "timeline_gpu_engine.csv")
+
+    @property
+    def timeline_gpu_process_csv(self) -> str:
+        return os.path.join(self.run_dir, "timeline_gpu_process.csv")
+
+    @property
+    def timeline_gpu_adapter_csv(self) -> str:
+        return os.path.join(self.run_dir, "timeline_gpu_adapter.csv")
+
+    @property
+    def event_log_json(self) -> str:
+        return os.path.join(self.run_dir, "event_log.json")
+
+    @property
+    def etw_disk_summary(self) -> str:
+        return os.path.join(self.run_dir, "etw_disk_summary.json")
+
+    @property
+    def etw_etl(self) -> str:
+        return os.path.join(self.run_dir, "etw_disk.etl")
+
+    @property
     def process_events(self) -> str:
         return os.path.join(self.run_dir, "process_events.json")
 

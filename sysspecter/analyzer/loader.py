@@ -47,8 +47,15 @@ class RunData:
     process_rows: list[dict[str, Any]]
     network_rows: list[dict[str, Any]]
     latency_rows: list[dict[str, Any]]
+    connection_rows: list[dict[str, Any]]
     process_events: list[dict[str, Any]]
     service_events: list[dict[str, Any]]
+    # Phase 3 optional data
+    gpu_engine_rows: list[dict[str, Any]]
+    gpu_process_rows: list[dict[str, Any]]
+    gpu_adapter_rows: list[dict[str, Any]]
+    event_log: dict[str, Any]
+    etw_disk: dict[str, Any]
 
 
 def _coerce_system_row(r: dict[str, Any]) -> dict[str, Any]:
@@ -108,10 +115,48 @@ def _coerce_network_row(r: dict[str, Any]) -> dict[str, Any]:
 
 def _coerce_latency_row(r: dict[str, Any]) -> dict[str, Any]:
     out = dict(r)
-    for k in ("rel_seconds", "timestamp", "avg_ms", "min_ms", "max_ms", "jitter_ms", "loss_pct"):
+    for k in ("rel_seconds", "timestamp", "avg_ms", "min_ms", "max_ms", "jitter_ms",
+              "loss_pct", "resolve_ms"):
         if k in out:
             out[k] = _to_float(out[k])
     out["count"] = _to_int(out.get("count"))
+    return out
+
+
+def _coerce_connection_row(r: dict[str, Any]) -> dict[str, Any]:
+    out = dict(r)
+    for k in ("rel_seconds", "timestamp"):
+        if k in out:
+            out[k] = _to_float(out[k])
+    out["pid"] = _to_int(out.get("pid"))
+    return out
+
+
+def _coerce_gpu_engine_row(r: dict[str, Any]) -> dict[str, Any]:
+    out = dict(r)
+    for k in ("rel_seconds", "timestamp", "utilization_pct"):
+        if k in out:
+            out[k] = _to_float(out[k])
+    return out
+
+
+def _coerce_gpu_process_row(r: dict[str, Any]) -> dict[str, Any]:
+    out = dict(r)
+    for k in ("rel_seconds", "timestamp"):
+        if k in out:
+            out[k] = _to_float(out[k])
+    for k in ("pid", "dedicated_bytes", "shared_bytes"):
+        if k in out:
+            out[k] = _to_int(out[k])
+    return out
+
+
+def _coerce_gpu_adapter_row(r: dict[str, Any]) -> dict[str, Any]:
+    out = dict(r)
+    for k in ("rel_seconds", "timestamp", "temperature_c", "power_w",
+              "mem_used_mb", "mem_total_mb", "utilization_pct"):
+        if k in out:
+            out[k] = _to_float(out[k])
     return out
 
 
@@ -131,6 +176,12 @@ def load_run(run_dir: str) -> RunData:
         process_rows=[_coerce_process_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_processes.csv"))],
         network_rows=[_coerce_network_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_network.csv"))],
         latency_rows=[_coerce_latency_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_latency.csv"))],
+        connection_rows=[_coerce_connection_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_connections.csv"))],
         process_events=_read_json("process_events.json", []),
         service_events=_read_json("service_events.json", []),
+        gpu_engine_rows=[_coerce_gpu_engine_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_engine.csv"))],
+        gpu_process_rows=[_coerce_gpu_process_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_process.csv"))],
+        gpu_adapter_rows=[_coerce_gpu_adapter_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_adapter.csv"))],
+        event_log=_read_json("event_log.json", {}),
+        etw_disk=_read_json("etw_disk_summary.json", {}),
     )
