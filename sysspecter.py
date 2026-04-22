@@ -87,6 +87,33 @@ def _build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("inspect", help="Quick console summary of a completed run")
     i.add_argument("--run", required=True, help="Path to a run folder")
 
+    g = sub.add_parser("gui", help="Launch the Tkinter-based graphical interface")
+    g.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT,
+                   help="Default output root shown in the UI (default: %(default)s)")
+
+    sp = sub.add_parser(
+        "split",
+        help="Split a finished run into phases based on metric change points",
+    )
+    sp.add_argument("--run", required=True, help="Path to a run folder")
+    sp.add_argument("--min-phase-seconds", type=float, default=60.0,
+                    dest="min_phase_seconds",
+                    help="Drop/merge phases shorter than this many seconds (default: 60)")
+    sp.add_argument("--window-seconds", type=float, default=20.0,
+                    dest="window_seconds",
+                    help="Sliding-window size in seconds for change-point detection (default: 20)")
+    sp.add_argument("--step-threshold", type=float, default=12.0,
+                    dest="step_threshold",
+                    help="Minimum mean intensity shift (percent points) to flag a step (default: 12)")
+    sp.add_argument("--slope-threshold", type=float, default=0.8,
+                    dest="slope_threshold",
+                    help="Minimum slope shift per second to flag a regime change (default: 0.8)")
+    sp.add_argument("--proximity-seconds", type=float, default=30.0,
+                    dest="proximity_seconds",
+                    help="Merge change points closer than this many seconds (default: 30)")
+    sp.add_argument("--no-subreports", action="store_true", dest="no_subreports",
+                    help="Only detect phases; skip generating per-phase HTML reports")
+
     return parser
 
 
@@ -260,6 +287,38 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_gui(args: argparse.Namespace) -> int:
+    from sysspecter.gui.app import run_gui
+    return run_gui(output_root=args.output_root)
+
+
+def _cmd_split(args: argparse.Namespace) -> int:
+    from sysspecter.splitter.orchestrator import split_run
+
+    run = os.path.abspath(args.run)
+    if not os.path.isdir(run):
+        print(f"error: not a directory: {run}", file=sys.stderr)
+        return 2
+    if args.min_phase_seconds <= 0:
+        print("error: --min-phase-seconds must be > 0", file=sys.stderr)
+        return 2
+    result = split_run(
+        run,
+        min_phase_seconds=args.min_phase_seconds,
+        window_seconds=args.window_seconds,
+        step_threshold=args.step_threshold,
+        slope_threshold=args.slope_threshold,
+        proximity_seconds=args.proximity_seconds,
+        build_subreports=not args.no_subreports,
+    )
+    print()
+    print("============================================================")
+    print(f" Phasen-Split fertig: {len(result.get('phases', []))} Phasen")
+    print(f" Uebersicht: {os.path.join(run, 'phases_report.html')}")
+    print("============================================================")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -274,6 +333,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_report(args)
     if args.command == "inspect":
         return _cmd_inspect(args)
+    if args.command == "split":
+        return _cmd_split(args)
+    if args.command == "gui":
+        return _cmd_gui(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

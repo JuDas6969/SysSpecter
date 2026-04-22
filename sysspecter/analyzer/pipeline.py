@@ -22,13 +22,21 @@ from .scores import calculate_scores
 from .slowdowns import detect_slowdown_windows
 
 
-def analyze_run(run_dir: str, max_rel_seconds: float | None = None) -> dict[str, Any]:
-    logger = get_logger("analyzer", os.path.join(run_dir, "logs", "analyzer.log"))
-    if max_rel_seconds is not None:
-        logger.info("loading run %s (trimmed to first %.0fs)", run_dir, max_rel_seconds)
+def analyze_run(
+    run_dir: str,
+    max_rel_seconds: float | None = None,
+    min_rel_seconds: float | None = None,
+    output_dir: str | None = None,
+) -> dict[str, Any]:
+    out_dir = output_dir or run_dir
+    logger = get_logger("analyzer", os.path.join(out_dir, "logs", "analyzer.log"))
+    if min_rel_seconds is not None or max_rel_seconds is not None:
+        lo = min_rel_seconds if min_rel_seconds is not None else 0.0
+        hi = max_rel_seconds if max_rel_seconds is not None else float("inf")
+        logger.info("loading run %s (window %.0fs-%.0fs)", run_dir, lo, hi)
     else:
         logger.info("loading run %s", run_dir)
-    rd = load_run(run_dir, max_rel_seconds=max_rel_seconds)
+    rd = load_run(run_dir, max_rel_seconds=max_rel_seconds, min_rel_seconds=min_rel_seconds)
 
     thresholds_data = (rd.manifest or {}).get("thresholds") or {}
     valid_fields = set(Thresholds().__dict__.keys())
@@ -105,8 +113,9 @@ def analyze_run(run_dir: str, max_rel_seconds: float | None = None) -> dict[str,
         "summary": _summarize(anomalies, slowdowns, leaks, bottlenecks, scores),
     }
 
-    atomic_write_json(os.path.join(run_dir, "findings.json"), findings)
-    atomic_write_json(os.path.join(run_dir, "scores.json"), scores)
+    os.makedirs(out_dir, exist_ok=True)
+    atomic_write_json(os.path.join(out_dir, "findings.json"), findings)
+    atomic_write_json(os.path.join(out_dir, "scores.json"), scores)
     logger.info("wrote findings.json and scores.json")
     return {"findings": findings, "scores": scores}
 

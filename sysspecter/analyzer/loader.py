@@ -160,16 +160,29 @@ def _coerce_gpu_adapter_row(r: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _within(rel: Any, max_rel_seconds: float | None) -> bool:
-    if max_rel_seconds is None:
+def _within(
+    rel: Any,
+    min_rel_seconds: float | None,
+    max_rel_seconds: float | None,
+) -> bool:
+    if min_rel_seconds is None and max_rel_seconds is None:
         return True
     try:
-        return float(rel or 0.0) <= max_rel_seconds
+        v = float(rel or 0.0)
     except (TypeError, ValueError):
         return True
+    if min_rel_seconds is not None and v < min_rel_seconds:
+        return False
+    if max_rel_seconds is not None and v > max_rel_seconds:
+        return False
+    return True
 
 
-def load_run(run_dir: str, max_rel_seconds: float | None = None) -> RunData:
+def load_run(
+    run_dir: str,
+    max_rel_seconds: float | None = None,
+    min_rel_seconds: float | None = None,
+) -> RunData:
     def _read_json(name: str, default):
         path = os.path.join(run_dir, name)
         if not os.path.exists(path):
@@ -178,16 +191,23 @@ def load_run(run_dir: str, max_rel_seconds: float | None = None) -> RunData:
             return json.load(f)
 
     def _clip(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if max_rel_seconds is None:
+        if min_rel_seconds is None and max_rel_seconds is None:
             return rows
-        return [r for r in rows if _within(r.get("rel_seconds"), max_rel_seconds)]
+        return [r for r in rows if _within(r.get("rel_seconds"), min_rel_seconds, max_rel_seconds)]
 
     manifest = _read_json("manifest.json", {})
-    if max_rel_seconds is not None and isinstance(manifest, dict):
+    window_applied = min_rel_seconds is not None or max_rel_seconds is not None
+    if window_applied and isinstance(manifest, dict):
         manifest = dict(manifest)
         manifest["trimmed_from_seconds"] = manifest.get("duration_actual_seconds")
-        manifest["duration_actual_seconds"] = round(float(max_rel_seconds), 2)
-        manifest["stop_reason"] = (manifest.get("stop_reason") or "") + " (trimmed)"
+        lo = min_rel_seconds if min_rel_seconds is not None else 0.0
+        hi = max_rel_seconds if max_rel_seconds is not None else \
+            (manifest.get("duration_actual_seconds") or lo)
+        manifest["window_start_seconds"] = round(float(lo), 2)
+        manifest["window_end_seconds"] = round(float(hi), 2)
+        manifest["duration_actual_seconds"] = round(float(hi) - float(lo), 2)
+        note = " (trimmed)" if min_rel_seconds is None else " (phase)"
+        manifest["stop_reason"] = (manifest.get("stop_reason") or "") + note
 
     return RunData(
         run_dir=run_dir,
@@ -198,8 +218,8 @@ def load_run(run_dir: str, max_rel_seconds: float | None = None) -> RunData:
         network_rows=_clip([_coerce_network_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_network.csv"))]),
         latency_rows=_clip([_coerce_latency_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_latency.csv"))]),
         connection_rows=_clip([_coerce_connection_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_connections.csv"))]),
-        process_events=[e for e in _read_json("process_events.json", []) if _within(e.get("rel_seconds"), max_rel_seconds)],
-        service_events=[e for e in _read_json("service_events.json", []) if _within(e.get("rel_seconds"), max_rel_seconds)],
+        process_events=[e for e in _read_json("process_events.json", []) if _within(e.get("rel_seconds"), min_rel_seconds, max_rel_seconds)],
+        service_events=[e for e in _read_json("service_events.json", []) if _within(e.get("rel_seconds"), min_rel_seconds, max_rel_seconds)],
         gpu_engine_rows=_clip([_coerce_gpu_engine_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_engine.csv"))]),
         gpu_process_rows=_clip([_coerce_gpu_process_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_process.csv"))]),
         gpu_adapter_rows=_clip([_coerce_gpu_adapter_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_adapter.csv"))]),

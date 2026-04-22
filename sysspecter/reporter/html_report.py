@@ -912,32 +912,41 @@ def _render(
     )
 
 
-def build_report(run_dir: str, max_rel_seconds: float | None = None) -> str:
-    logger = get_logger("reporter", os.path.join(run_dir, "logs", "reporter.log"))
-    logger.info("building HTML report for %s", run_dir)
+def build_report(
+    run_dir: str,
+    max_rel_seconds: float | None = None,
+    min_rel_seconds: float | None = None,
+    output_dir: str | None = None,
+) -> str:
+    out_dir = output_dir or run_dir
+    os.makedirs(os.path.join(out_dir, "logs"), exist_ok=True)
+    logger = get_logger("reporter", os.path.join(out_dir, "logs", "reporter.log"))
+    logger.info("building HTML report for %s -> %s", run_dir, out_dir)
 
-    findings_path = os.path.join(run_dir, "findings.json")
-    scores_path = os.path.join(run_dir, "scores.json")
-    if max_rel_seconds is not None or not (os.path.exists(findings_path) and os.path.exists(scores_path)):
+    findings_path = os.path.join(out_dir, "findings.json")
+    scores_path = os.path.join(out_dir, "scores.json")
+    windowed = min_rel_seconds is not None or max_rel_seconds is not None
+    if windowed or not (os.path.exists(findings_path) and os.path.exists(scores_path)):
         logger.info("running analyzer%s",
-                    f" (trimmed to {max_rel_seconds:.0f}s)" if max_rel_seconds else "")
-        analyze_run(run_dir, max_rel_seconds=max_rel_seconds)
+                    f" (window)" if windowed else "")
+        analyze_run(run_dir, max_rel_seconds=max_rel_seconds,
+                    min_rel_seconds=min_rel_seconds, output_dir=out_dir)
 
-    rd = load_run(run_dir, max_rel_seconds=max_rel_seconds)
+    rd = load_run(run_dir, max_rel_seconds=max_rel_seconds, min_rel_seconds=min_rel_seconds)
     findings = load_json(findings_path)
     scores = load_json(scores_path)
 
     html_txt = _render(rd.manifest, rd.static, findings, scores,
                        rd.system_rows, rd.latency_rows, rd.process_rows)
 
-    out_path = os.path.join(run_dir, "final_report.html")
+    out_path = os.path.join(out_dir, "final_report.html")
     tmp = out_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(html_txt)
     os.replace(tmp, out_path)
 
     md = generate_markdown_summary(rd.manifest, rd.static, findings, scores)
-    md_path = os.path.join(run_dir, "final_report.md")
+    md_path = os.path.join(out_dir, "final_report.md")
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(md)
 
