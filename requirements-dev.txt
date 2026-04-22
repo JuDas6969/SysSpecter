@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Used only by build_exe.bat to package a single-file USB executable.
+pyinstaller>=6.11

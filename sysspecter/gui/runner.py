@@ -35,11 +35,23 @@ def main_script_path() -> Path:
     return candidate
 
 
+def _build_invocation(args: list[str]) -> list[str]:
+    """Return the full argv to launch a sysspecter subcommand.
+
+    When running as a PyInstaller-frozen EXE, sys.executable IS the
+    sysspecter CLI -- the subcommand is passed directly. Otherwise we
+    spawn the interpreter pointed at the sysspecter.py entry script.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable] + args
+    return [sys.executable, str(main_script_path())] + args
+
+
 class SubprocessRunner:
     """Run a sysspecter subcommand and feed its output to a queue."""
 
     def __init__(self, args: list[str], env: dict[str, str] | None = None) -> None:
-        self.args: list[str] = [sys.executable, str(main_script_path())] + args
+        self.args: list[str] = _build_invocation(args)
         self.env = env or dict(os.environ)
         self.env.setdefault("PYTHONIOENCODING", "utf-8")
         self.env.setdefault("PYTHONUTF8", "1")

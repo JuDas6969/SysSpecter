@@ -320,6 +320,13 @@ def _cmd_split(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # When invoked with no arguments (e.g. a double-clicked USB executable)
+    # fall back to launching the GUI rather than printing argparse usage.
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        argv = ["gui"]
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 

@@ -27,6 +27,33 @@ Run SysSpecter via `sysspecter.bat`, which points at the venv's Python:
 sysspecter.bat monitor --mode support
 ```
 
+For a GUI wrapper around the same commands (tabs for Monitor / Runs / Compare):
+
+```
+sysspecter-gui.bat
+```
+
+### Portable single-file EXE (for USB sticks)
+
+Once `install.bat` has set up the venv, package everything into one
+self-contained executable:
+
+```
+build_exe.bat
+```
+
+This drops `dist\SysSpecter.exe` (~40–60 MB). Copy the EXE onto a USB stick
+and run it on any Windows 10/11 box — no Python install needed. Double-click
+launches the GUI. CLI usage still works too:
+
+```
+SysSpecter.exe monitor --mode support
+SysSpecter.exe compare --input X:\SysSpecter\Runs
+```
+
+When running as a frozen EXE, the default output root becomes
+`<exe_dir>\SysSpecter\Runs`, so all reports stay on the stick.
+
 ## Permissions
 
 Run in an **elevated (admin) terminal** for full coverage — a few counters

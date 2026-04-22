@@ -4,9 +4,29 @@ All thresholds are documented so the report can explain the logic."""
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass, field
 
-DEFAULT_OUTPUT_ROOT = r"C:\Temp\SysSpecter"
+
+def _default_output_root() -> str:
+    """Pick a sensible default output root.
+
+    When running as a PyInstaller-frozen EXE (e.g. from a USB stick), we
+    want reports to land next to the executable so the whole workflow
+    stays on the stick. Otherwise fall back to the conventional location
+    under C:\\Temp.
+    """
+    if getattr(sys, "frozen", False):
+        try:
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            return os.path.join(exe_dir, "SysSpecter")
+        except Exception:
+            pass
+    return r"C:\Temp\SysSpecter"
+
+
+DEFAULT_OUTPUT_ROOT = _default_output_root()
 DEFAULT_INTERVAL_SECONDS = 1.0
 DEFAULT_DURATION_SECONDS_BASELINE = 1800
 DEFAULT_DURATION_SECONDS_WORKLOAD = 1800
