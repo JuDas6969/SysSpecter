@@ -160,7 +160,16 @@ def _coerce_gpu_adapter_row(r: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def load_run(run_dir: str) -> RunData:
+def _within(rel: Any, max_rel_seconds: float | None) -> bool:
+    if max_rel_seconds is None:
+        return True
+    try:
+        return float(rel or 0.0) <= max_rel_seconds
+    except (TypeError, ValueError):
+        return True
+
+
+def load_run(run_dir: str, max_rel_seconds: float | None = None) -> RunData:
     def _read_json(name: str, default):
         path = os.path.join(run_dir, name)
         if not os.path.exists(path):
@@ -168,20 +177,32 @@ def load_run(run_dir: str) -> RunData:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
+    def _clip(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if max_rel_seconds is None:
+            return rows
+        return [r for r in rows if _within(r.get("rel_seconds"), max_rel_seconds)]
+
+    manifest = _read_json("manifest.json", {})
+    if max_rel_seconds is not None and isinstance(manifest, dict):
+        manifest = dict(manifest)
+        manifest["trimmed_from_seconds"] = manifest.get("duration_actual_seconds")
+        manifest["duration_actual_seconds"] = round(float(max_rel_seconds), 2)
+        manifest["stop_reason"] = (manifest.get("stop_reason") or "") + " (trimmed)"
+
     return RunData(
         run_dir=run_dir,
-        manifest=_read_json("manifest.json", {}),
+        manifest=manifest,
         static=_read_json("static_snapshot.json", {}),
-        system_rows=[_coerce_system_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_system.csv"))],
-        process_rows=[_coerce_process_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_processes.csv"))],
-        network_rows=[_coerce_network_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_network.csv"))],
-        latency_rows=[_coerce_latency_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_latency.csv"))],
-        connection_rows=[_coerce_connection_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_connections.csv"))],
-        process_events=_read_json("process_events.json", []),
-        service_events=_read_json("service_events.json", []),
-        gpu_engine_rows=[_coerce_gpu_engine_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_engine.csv"))],
-        gpu_process_rows=[_coerce_gpu_process_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_process.csv"))],
-        gpu_adapter_rows=[_coerce_gpu_adapter_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_adapter.csv"))],
+        system_rows=_clip([_coerce_system_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_system.csv"))]),
+        process_rows=_clip([_coerce_process_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_processes.csv"))]),
+        network_rows=_clip([_coerce_network_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_network.csv"))]),
+        latency_rows=_clip([_coerce_latency_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_latency.csv"))]),
+        connection_rows=_clip([_coerce_connection_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_connections.csv"))]),
+        process_events=[e for e in _read_json("process_events.json", []) if _within(e.get("rel_seconds"), max_rel_seconds)],
+        service_events=[e for e in _read_json("service_events.json", []) if _within(e.get("rel_seconds"), max_rel_seconds)],
+        gpu_engine_rows=_clip([_coerce_gpu_engine_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_engine.csv"))]),
+        gpu_process_rows=_clip([_coerce_gpu_process_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_process.csv"))]),
+        gpu_adapter_rows=_clip([_coerce_gpu_adapter_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_adapter.csv"))]),
         event_log=_read_json("event_log.json", {}),
         etw_disk=_read_json("etw_disk_summary.json", {}),
     )

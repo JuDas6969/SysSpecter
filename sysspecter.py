@@ -78,6 +78,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("report", help="Rebuild reports from an existing run")
     r.add_argument("--run", required=True, help="Path to a run folder")
+    r.add_argument("--trim-seconds", type=float, default=None, dest="trim_seconds",
+                   help="Only include data from the first N seconds of the run "
+                        "(e.g. --trim-seconds 800). Non-destructive: original CSVs "
+                        "are left intact; only final_report.html/.md, findings.json, "
+                        "scores.json are rebuilt with the trimmed view.")
 
     i = sub.add_parser("inspect", help="Quick console summary of a completed run")
     i.add_argument("--run", required=True, help="Path to a run folder")
@@ -237,7 +242,11 @@ def _cmd_report(args: argparse.Namespace) -> int:
     if not os.path.isdir(run):
         print(f"error: not a directory: {run}", file=sys.stderr)
         return 2
-    regenerate_report(run)
+    trim = getattr(args, "trim_seconds", None)
+    if trim is not None and trim <= 0:
+        print("error: --trim-seconds must be > 0", file=sys.stderr)
+        return 2
+    regenerate_report(run, max_rel_seconds=trim)
     print(f"Report rebuilt: {os.path.join(run, 'final_report.html')}")
     return 0
 

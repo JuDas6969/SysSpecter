@@ -11,6 +11,7 @@ from jinja2 import Environment, BaseLoader, select_autoescape
 from ..analyzer.loader import load_run
 from ..analyzer.pipeline import analyze_run
 from ..logging_setup import get_logger
+from ..manifest import repair_manifest_if_aborted
 from .json_export import atomic_write_json, load_json
 from .markdown_report import generate_markdown_summary
 from .svg_charts import heatmap, line_chart, stacked_area_chart
@@ -911,17 +912,18 @@ def _render(
     )
 
 
-def build_report(run_dir: str) -> str:
+def build_report(run_dir: str, max_rel_seconds: float | None = None) -> str:
     logger = get_logger("reporter", os.path.join(run_dir, "logs", "reporter.log"))
     logger.info("building HTML report for %s", run_dir)
 
     findings_path = os.path.join(run_dir, "findings.json")
     scores_path = os.path.join(run_dir, "scores.json")
-    if not (os.path.exists(findings_path) and os.path.exists(scores_path)):
-        logger.info("findings/scores missing; running analyzer first")
-        analyze_run(run_dir)
+    if max_rel_seconds is not None or not (os.path.exists(findings_path) and os.path.exists(scores_path)):
+        logger.info("running analyzer%s",
+                    f" (trimmed to {max_rel_seconds:.0f}s)" if max_rel_seconds else "")
+        analyze_run(run_dir, max_rel_seconds=max_rel_seconds)
 
-    rd = load_run(run_dir)
+    rd = load_run(run_dir, max_rel_seconds=max_rel_seconds)
     findings = load_json(findings_path)
     scores = load_json(scores_path)
 
@@ -943,6 +945,12 @@ def build_report(run_dir: str) -> str:
     return out_path
 
 
-def regenerate_report(run_dir: str) -> str:
-    analyze_run(run_dir)
-    return build_report(run_dir)
+def regenerate_report(run_dir: str, max_rel_seconds: float | None = None) -> str:
+    logger = get_logger("reporter", os.path.join(run_dir, "logs", "reporter.log"))
+    if repair_manifest_if_aborted(run_dir):
+        logger.info("manifest was incomplete — repaired with stop_reason=aborted")
+        print("  Manifest unvollständig — repariert (stop_reason=aborted).", flush=True)
+    if max_rel_seconds is not None:
+        print(f"  Trimme Report auf die ersten {max_rel_seconds:.0f}s.", flush=True)
+    analyze_run(run_dir, max_rel_seconds=max_rel_seconds)
+    return build_report(run_dir, max_rel_seconds=max_rel_seconds)

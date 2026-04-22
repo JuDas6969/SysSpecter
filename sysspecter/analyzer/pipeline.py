@@ -22,10 +22,13 @@ from .scores import calculate_scores
 from .slowdowns import detect_slowdown_windows
 
 
-def analyze_run(run_dir: str) -> dict[str, Any]:
+def analyze_run(run_dir: str, max_rel_seconds: float | None = None) -> dict[str, Any]:
     logger = get_logger("analyzer", os.path.join(run_dir, "logs", "analyzer.log"))
-    logger.info("loading run %s", run_dir)
-    rd = load_run(run_dir)
+    if max_rel_seconds is not None:
+        logger.info("loading run %s (trimmed to first %.0fs)", run_dir, max_rel_seconds)
+    else:
+        logger.info("loading run %s", run_dir)
+    rd = load_run(run_dir, max_rel_seconds=max_rel_seconds)
 
     thresholds_data = (rd.manifest or {}).get("thresholds") or {}
     valid_fields = set(Thresholds().__dict__.keys())

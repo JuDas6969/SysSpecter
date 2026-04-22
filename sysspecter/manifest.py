@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv as _csv
 import ctypes
 import datetime as _dt
 import json
@@ -83,3 +84,68 @@ def write_manifest(manifest_path: str, manifest: dict[str, Any]) -> None:
 def load_manifest(manifest_path: str) -> dict[str, Any]:
     with open(manifest_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _last_rel_seconds_in_csv(csv_path: str) -> float | None:
+    if not os.path.exists(csv_path):
+        return None
+    last: float | None = None
+    try:
+        with open(csv_path, "r", encoding="utf-8", newline="") as f:
+            reader = _csv.DictReader(f)
+            for row in reader:
+                v = row.get("rel_seconds")
+                if not v:
+                    continue
+                try:
+                    last = float(v)
+                except (TypeError, ValueError):
+                    continue
+    except OSError:
+        return None
+    return last
+
+
+def repair_manifest_if_aborted(run_dir: str) -> bool:
+    """If the manifest has no ended_at (run was killed hard), infer end from artifacts.
+
+    Uses the last rel_seconds in timeline_system.csv for duration; falls back to
+    the collector.log mtime. Sets stop_reason="aborted". Returns True if the
+    manifest was modified.
+    """
+    manifest_path = os.path.join(run_dir, "manifest.json")
+    if not os.path.exists(manifest_path):
+        return False
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if data.get("ended_at"):
+        return False
+
+    started_at: _dt.datetime | None = None
+    started_str = data.get("started_at")
+    if isinstance(started_str, str):
+        try:
+            started_at = _dt.datetime.fromisoformat(started_str)
+        except ValueError:
+            started_at = None
+
+    duration = _last_rel_seconds_in_csv(os.path.join(run_dir, "timeline_system.csv"))
+    ended_at: _dt.datetime | None = None
+    if started_at is not None and duration is not None:
+        ended_at = started_at + _dt.timedelta(seconds=duration)
+    else:
+        log_path = os.path.join(run_dir, "logs", "collector.log")
+        if os.path.exists(log_path):
+            ended_at = _dt.datetime.fromtimestamp(os.path.getmtime(log_path))
+            if started_at is not None and duration is None:
+                duration = (ended_at - started_at).total_seconds()
+
+    data["ended_at"] = ended_at.isoformat(timespec="seconds") if ended_at else None
+    data["stop_reason"] = "aborted"
+    data["duration_actual_seconds"] = round(duration, 2) if duration is not None else None
+
+    tmp = manifest_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, manifest_path)
+    return True
