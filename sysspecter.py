@@ -87,6 +87,13 @@ def _build_parser() -> argparse.ArgumentParser:
     i = sub.add_parser("inspect", help="Quick console summary of a completed run")
     i.add_argument("--run", required=True, help="Path to a run folder")
 
+    z = sub.add_parser("sanitize",
+                       help="Copy a run into a shippable, de-identified sibling folder")
+    z.add_argument("--run", required=True, help="Path to a run folder")
+    z.add_argument("--out", default=None,
+                   help="Output folder for the sanitized copy "
+                        "(default: <run>_sanitized next to it)")
+
     g = sub.add_parser("gui", help="Launch the Tkinter-based graphical interface")
     g.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT,
                    help="Default output root shown in the UI (default: %(default)s)")
@@ -303,6 +310,23 @@ def _cmd_gui(args: argparse.Namespace) -> int:
     return run_gui(output_root=args.output_root)
 
 
+def _cmd_sanitize(args: argparse.Namespace) -> int:
+    from sysspecter.sanitizer import sanitize_run
+
+    run = os.path.abspath(args.run)
+    if not os.path.isdir(run):
+        print(f"error: not a directory: {run}", file=sys.stderr)
+        return 2
+    out = sanitize_run(run, args.out)
+    print("============================================================")
+    print(" Sanitized copy written")
+    print("============================================================")
+    print(f" Source: {run}")
+    print(f" Output: {out}")
+    print("============================================================")
+    return 0
+
+
 def _cmd_split(args: argparse.Namespace) -> int:
     from sysspecter.splitter.orchestrator import split_run
 
@@ -355,6 +379,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_split(args)
     if args.command == "gui":
         return _cmd_gui(args)
+    if args.command == "sanitize":
+        return _cmd_sanitize(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

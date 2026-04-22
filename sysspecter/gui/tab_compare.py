@@ -11,7 +11,20 @@ from typing import Callable
 from ..paths import build_comparison_paths  # for displaying default root only
 from .runner import SubprocessRunner
 from .runs import scan_runs
+from .tooltip import attach as tooltip
 from .widgets import LogPane, RunsTable
+
+
+_TT_OUTPUT = ("Folder that contains Runs/. Comparison output lands in "
+              "<this folder>/Comparisons/CMP_<timestamp>_<id>/.")
+_TT_REFRESH = "Re-scan the output root (Ctrl+R)."
+_TT_SELECT_ALL = "Select every visible run."
+_TT_CLEAR = "Unselect everything."
+_TT_START = ("Run the comparison on the selected runs. Mode is auto-detected "
+             "from hostnames: all the same = before/after, exactly 2 distinct = "
+             "pair diagnosis, 3+ = fleet. Hardware/software/config diffs and "
+             "evidence-based recommendations are included in the report.")
+_TT_OPEN = "Open the most recently generated comparison_report.html."
 
 
 class CompareTab(ttk.Frame):
@@ -37,9 +50,15 @@ class CompareTab(ttk.Frame):
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         top.columnconfigure(1, weight=1)
-        ttk.Label(top, text="Output root:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self._output_root_var).grid(row=0, column=1, sticky="ew", padx=(6, 6))
-        ttk.Button(top, text="Refresh", command=self.refresh).grid(row=0, column=2)
+        lbl = ttk.Label(top, text="Output root:")
+        lbl.grid(row=0, column=0, sticky="w")
+        tooltip(lbl, _TT_OUTPUT)
+        ent = ttk.Entry(top, textvariable=self._output_root_var)
+        ent.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        tooltip(ent, _TT_OUTPUT)
+        btn_ref = ttk.Button(top, text="Refresh", command=self.refresh)
+        btn_ref.grid(row=0, column=2)
+        tooltip(btn_ref, _TT_REFRESH)
 
         help_lbl = ttk.Label(self, foreground="#555",
                              text="Select 2+ runs (Ctrl/Shift-click), then 'Start compare'. "
@@ -51,12 +70,19 @@ class CompareTab(ttk.Frame):
 
         actions = ttk.Frame(self)
         actions.grid(row=2, column=0, sticky="ew", pady=(8, 8))
-        ttk.Button(actions, text="Select all", command=self._select_all).grid(row=0, column=0, padx=(0, 6))
-        ttk.Button(actions, text="Clear selection", command=self._clear_sel).grid(row=0, column=1, padx=(0, 6))
-        ttk.Button(actions, text="Start compare", command=self._start).grid(row=0, column=2, padx=(0, 6))
+        sel_all = ttk.Button(actions, text="Select all", command=self._select_all)
+        sel_all.grid(row=0, column=0, padx=(0, 6))
+        tooltip(sel_all, _TT_SELECT_ALL)
+        clr = ttk.Button(actions, text="Clear selection", command=self._clear_sel)
+        clr.grid(row=0, column=1, padx=(0, 6))
+        tooltip(clr, _TT_CLEAR)
+        start = ttk.Button(actions, text="Start compare", command=self._start)
+        start.grid(row=0, column=2, padx=(0, 6))
+        tooltip(start, _TT_START)
         self.open_btn = ttk.Button(actions, text="Open last report", command=self._open_last,
                                    state="disabled")
         self.open_btn.grid(row=0, column=3, padx=(0, 6))
+        tooltip(self.open_btn, _TT_OPEN)
 
         ttk.Label(self, text="Comparer output:").grid(row=2, column=0, sticky="sw")
         self.log = LogPane(self)

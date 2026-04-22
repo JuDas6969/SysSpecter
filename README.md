@@ -202,15 +202,84 @@ report. Confidence of the diagnosis depends on sample count
   15–30s on a separate cadence.
 - CSVs stream to disk and flush every 10s — no in-memory accumulation.
 
-## Known limitations (Phase 1 scope)
+## How to read the report
 
-- No ETW integration, no deep GPU metrics, no event-log correlation, no DNS
-  attribution beyond a simple `ping` probe. These are called out in the spec
-  as Phase 2/3 and are deliberately out of scope.
-- Disk active % is computed from psutil's `busy_time`; accuracy depends on
-  the Windows counter behaviour for the volume. Treat values near 100% as
-  "likely saturated" rather than absolute truth.
-- `net_connections(kind="tcp")` requires elevated rights on some systems;
+The HTML report opens with a brand-coloured header and key metadata.
+Below that are several banners and sections you should read top-down.
+
+| Banner | Meaning | Action |
+|---|---|---|
+| **Running as standard user** (red) | You were not an Administrator. ETW disk I/O, handle counts on protected processes, and some WMI classes are missing from the data. | Re-run from an elevated prompt / "Run as administrator" on the EXE if those signals matter. |
+| **Collector degraded** (red) | One or more samplers failed mid-run (GPU, ETW, event-log, connections). The named collector's data is incomplete. | Open `logs/collector.log` for the exception; often means a driver/tool is missing. |
+| **Low sample count** (yellow) | Run ended with fewer than 60 system samples. Scoring and slowdown detection are statistically weak. | Re-run with a longer duration (≥ 5 min is a reasonable minimum). |
+
+**Executive summary** states the verdict in one sentence and lists six scores
+(0–100, higher = better):
+
+- `Overall` — weighted blend of the other five (weights printed at the bottom).
+- `Stability` — penalises CPU/mem variance and medium/high anomalies.
+- `Efficiency` — rewards idle headroom, penalises background noise.
+- `Workload` — fraction of time **not** in a slowdown window (only meaningful in `workload` mode).
+- `Security` — penalises AV/security-product CPU + RAM cost.
+- `Network` — penalises avg/p95 latency and loss.
+- `Hygiene` — penalises leak candidates weighted by confidence tier.
+
+The primary + secondary bottlenecks summarise the pressure axes that
+accumulated the most evidence. `none clearly dominant` means no single
+resource is driving the slowdown.
+
+**Slowdown windows** each have a confidence tier:
+
+- `suspicious` — short (< 10 s) or low evidence; often transient.
+- `likely` — ≥ 10 s and at least one sustained pressure reason.
+- `strong evidence` — ≥ 20 s and ≥ 2 reasons; worth a root-cause discussion.
+
+**Leak candidates** for memory, handles, and threads are ranked by the
+linear-regression slope of the per-process smoothed series. Confidence tiers
+(`suspicious` / `likely` / `strong evidence`) depend on slope magnitude and
+growth ratio relative to the starting value. A single `strong evidence`
+memory leak is usually worth reproducing and capturing an ETW trace for.
+
+**Offenders** is the list of PIDs and applications that consumed the most CPU,
+memory, handles, I/O, or thread count during the run. Use this to decide where
+to focus next — a clear top-1 CPU offender that also shows leak-candidate
+behaviour is usually the explanation.
+
+**Recommendations** at the bottom are observational ("your top 3 AV components
+averaged 15 % CPU"), not automated fixes.
+
+For the **comparison** report, the banner up top shows the detected mode
+(`Before/after`, `Pair diagnosis`, or `Fleet`). The hardware-diff table
+highlights fields that differ between the runs in yellow; read those first
+because they usually explain the score gaps.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| **`sysspecter stop` says "no active session found"** on a session that is clearly running | Tool version < 1.0.0 (collector heartbeat wasn't throttled to the log) | Upgrade. From 1.0.0 on the collector touches `collector.log` every 10 s. |
+| **SmartScreen blocks `SysSpecter.exe` on first launch** | The EXE is unsigned. | Click "More info" → "Run anyway". Re-appears on each machine until we ship a signed build (tracked in `BUILDING.md`). |
+| **Report shows "ETW disk capture not enabled" even though `--etw` was passed** | Not running elevated, or a stale `NT Kernel Logger` session is still live | Run as Administrator. If the problem persists, run `logman stop "NT Kernel Logger" -ets` in a terminal once. |
+| **GUI looks like Windows 98** | `ttk` fell back to its default theme on a very old Python/Tcl | Not a functional problem. Upgrade to Python 3.12+ if cosmetically important. |
+| **GUI window just flashes / disappears** | Hidden exception in a tab's constructor | Launch via `sysspecter.bat gui` (not `-gui.bat`) so you see the traceback in the console. |
+| **"Output folder is not writable" on USB** | Stick is read-only, full, or the path has characters Windows refuses | Re-insert the stick, test another path with `--output-root D:\SysSpecter`, or format as NTFS/exFAT. |
+| **Run folder exists but no `final_report.html`** | Monitor was killed hard before finalize could run | `sysspecter report --run <folder>` rebuilds it; the manifest is repaired on the fly. |
+| **Huge run with too many phases after `split`** | Defaults only kick in when threshold flags are omitted | Omit `--window-seconds` / `--min-phase-seconds` so the auto-scaled defaults engage, or raise them manually. |
+| **"psutil ImportError" when running sysspecter.bat** | The venv's Python is broken or the wrong interpreter is on PATH | Re-run `install.bat`. |
+
+If the tool crashes in a way that is not covered here, please capture
+`logs/collector.log`, `logs/analyzer.log`, `logs/reporter.log` from the
+affected run folder (plus the GUI console if running `sysspecter.bat gui`)
+before re-running.
+
+## Known limitations
+
+- **Unsigned EXE.** Windows SmartScreen will warn on first run; see
+  `BUILDING.md` for the customer-facing bypass and the code-signing path.
+- **Disk active %** is computed from psutil's `busy_time`; accuracy depends
+  on the Windows counter behaviour for the volume. Treat values near 100 %
+  as "likely saturated" rather than an absolute truth.
+- **`net_connections(kind="tcp")`** requires elevated rights on some systems;
   the CSV stores `-1` when the call is denied.
 - Commit bytes / pagefile-committed are not captured in Phase 1 (`psutil`
   does not expose the Windows commit counters directly). The manifest's

@@ -127,6 +127,33 @@ class App:
         # Route unhandled Tk callback exceptions into a user-visible dialog.
         self.root.report_callback_exception = self._on_tk_exception
 
+        self._install_shortcuts()
+
+    def _install_shortcuts(self) -> None:
+        def _refresh(_event=None) -> None:
+            tab = self._current_tab_widget()
+            if tab is not None and hasattr(tab, "refresh"):
+                tab.refresh()
+        def _quit(_event=None) -> None:
+            self._on_close()
+        def _open_selection(_event=None) -> None:
+            tab = self._current_tab_widget()
+            if tab is self.runs_tab:
+                self.runs_tab._action_open_report()
+        self.root.bind_all("<Control-r>", _refresh)
+        self.root.bind_all("<Control-R>", _refresh)
+        self.root.bind_all("<Control-q>", _quit)
+        self.root.bind_all("<Control-Q>", _quit)
+        self.root.bind_all("<Return>", _open_selection)
+
+    def _current_tab_widget(self) -> ttk.Frame | None:
+        try:
+            idx = self.notebook.index(self.notebook.select())
+            tabs = (self.monitor_tab, self.runs_tab, self.compare_tab, None)
+            return tabs[idx] if 0 <= idx < len(tabs) else None
+        except tk.TclError:
+            return None
+
     # --------------------------------------------------------------- chrome
     def _apply_window_icon(self) -> None:
         if not self._assets:

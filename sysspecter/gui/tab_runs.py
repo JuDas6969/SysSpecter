@@ -3,14 +3,42 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tkinter as tk
+import zipfile
 from tkinter import messagebox, simpledialog, ttk
 from typing import Callable
 
 from .runner import SubprocessRunner
 from .runs import scan_runs
+from .tooltip import attach as tooltip
 from .widgets import LogPane, RunsTable
+
+
+_TT = {
+    "output_root": ("Folder that contains the Runs/ subdirectory. Defaults to "
+                    "C:\\Temp\\SysSpecter on a dev install, or <exe_dir>\\SysSpecter "
+                    "on the portable EXE."),
+    "refresh": "Re-scan the output root and update the table. Shortcut: Ctrl+R.",
+    "open_report": ("Open the selected run's final_report.html. "
+                    "Double-click a row does the same thing."),
+    "open_folder": "Open the selected run folder in Windows Explorer.",
+    "rebuild": ("Re-run the analyzer + reporter on the stored CSVs. Use this when a "
+                "report is outdated or was produced by an older tool version."),
+    "trim": ("Rebuild the report considering only the first N seconds of captured "
+             "data -- handy when the operator forgot to Stop and the tail is idle."),
+    "split": ("Detect phase boundaries (step / slope / inflection / process-end) and "
+              "emit a sub-report per phase plus a phases_report.html overview."),
+    "inspect": "Print a short console summary (verdict + top scores).",
+    "delete": ("Permanently delete the selected run folder. There is NO undo. "
+               "You are asked to confirm first."),
+    "archive": ("Zip the selected run next to its folder for sharing "
+                "(good for sending findings to a vendor without exposing the live tree)."),
+    "sanitize": ("Produce a de-identified copy: hostnames, FQDN, BIOS / disk serials, "
+                 "user paths are replaced with [REDACTED] and the report is re-rendered. "
+                 "Use before forwarding findings to an external vendor."),
+}
 
 
 class RunsTab(ttk.Frame):
@@ -35,9 +63,15 @@ class RunsTab(ttk.Frame):
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         top.columnconfigure(1, weight=1)
-        ttk.Label(top, text="Output root:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(top, textvariable=self._output_root_var).grid(row=0, column=1, sticky="ew", padx=(6, 6))
-        ttk.Button(top, text="Refresh", command=self.refresh).grid(row=0, column=2)
+        lbl = ttk.Label(top, text="Output root:")
+        lbl.grid(row=0, column=0, sticky="w")
+        tooltip(lbl, _TT["output_root"])
+        ent = ttk.Entry(top, textvariable=self._output_root_var)
+        ent.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        tooltip(ent, _TT["output_root"])
+        btn_refresh = ttk.Button(top, text="Refresh", command=self.refresh)
+        btn_refresh.grid(row=0, column=2)
+        tooltip(btn_refresh, _TT["refresh"])
 
         self.table = RunsTable(self, selectmode="browse")
         self.table.grid(row=1, column=0, sticky="nsew")
@@ -45,12 +79,21 @@ class RunsTab(ttk.Frame):
 
         actions = ttk.Frame(self)
         actions.grid(row=2, column=0, sticky="ew", pady=(8, 8))
-        ttk.Button(actions, text="Open report", command=self._action_open_report).grid(row=0, column=0, padx=(0, 6))
-        ttk.Button(actions, text="Open folder", command=self._action_open_folder).grid(row=0, column=1, padx=(0, 6))
-        ttk.Button(actions, text="Rebuild report", command=self._action_rebuild).grid(row=0, column=2, padx=(0, 6))
-        ttk.Button(actions, text="Rebuild (trim…)", command=self._action_trim).grid(row=0, column=3, padx=(0, 6))
-        ttk.Button(actions, text="Split into phases", command=self._action_split).grid(row=0, column=4, padx=(0, 6))
-        ttk.Button(actions, text="Inspect", command=self._action_inspect).grid(row=0, column=5, padx=(0, 6))
+        defs = [
+            ("Open report", self._action_open_report, _TT["open_report"]),
+            ("Open folder", self._action_open_folder, _TT["open_folder"]),
+            ("Rebuild", self._action_rebuild, _TT["rebuild"]),
+            ("Rebuild (trim…)", self._action_trim, _TT["trim"]),
+            ("Split", self._action_split, _TT["split"]),
+            ("Sanitize", self._action_sanitize, _TT["sanitize"]),
+            ("Inspect", self._action_inspect, _TT["inspect"]),
+            ("Archive ZIP", self._action_archive, _TT["archive"]),
+            ("Delete", self._action_delete, _TT["delete"]),
+        ]
+        for col, (label, cmd, tip) in enumerate(defs):
+            btn = ttk.Button(actions, text=label, command=cmd)
+            btn.grid(row=0, column=col, padx=(0, 6))
+            tooltip(btn, tip)
 
         ttk.Label(self, text="Command output:").grid(row=2, column=0, sticky="sw", pady=(0, 0))
         self.log = LogPane(self)
@@ -135,8 +178,65 @@ class RunsTab(ttk.Frame):
             return
         self._launch(["split", "--run", path])
 
+    def _action_sanitize(self) -> None:
+        path = self._require_selection()
+        if not path:
+            return
+        self._launch(["sanitize", "--run", path])
+
     def _action_inspect(self) -> None:
         path = self._require_selection()
         if not path:
             return
         self._launch(["inspect", "--run", path])
+
+    def _action_archive(self) -> None:
+        path = self._require_selection()
+        if not path:
+            return
+        parent = os.path.dirname(path)
+        base = os.path.basename(path)
+        zip_path = os.path.join(parent, base + ".zip")
+        if os.path.exists(zip_path):
+            if not messagebox.askyesno(
+                "SysSpecter",
+                f"{zip_path} already exists. Overwrite?",
+            ):
+                return
+            try:
+                os.remove(zip_path)
+            except OSError as e:
+                messagebox.showerror("SysSpecter", f"Cannot overwrite existing ZIP: {e}")
+                return
+        self.log.append(f"[archive] zipping {base} -> {os.path.basename(zip_path)}")
+        try:
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                for root, _dirs, files in os.walk(path):
+                    for name in files:
+                        full = os.path.join(root, name)
+                        arc = os.path.relpath(full, parent)
+                        zf.write(full, arc)
+        except OSError as e:
+            messagebox.showerror("SysSpecter", f"Archive failed: {e}")
+            return
+        self.log.append(f"[archive] done: {zip_path}")
+        messagebox.showinfo("SysSpecter", f"Archive written:\n{zip_path}")
+
+    def _action_delete(self) -> None:
+        path = self._require_selection()
+        if not path:
+            return
+        base = os.path.basename(path)
+        if not messagebox.askyesno(
+            "Delete run",
+            f"Permanently delete this run?\n\n{base}\n\nThis cannot be undone.",
+            icon="warning",
+        ):
+            return
+        try:
+            shutil.rmtree(path)
+        except OSError as e:
+            messagebox.showerror("SysSpecter", f"Delete failed: {e}")
+            return
+        self.log.append(f"[delete] removed {base}")
+        self.refresh()

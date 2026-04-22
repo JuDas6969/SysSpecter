@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sysspecter"
+version = "1.0.0"
+description = "SysSpecter — Windows performance diagnostic and comparative benchmark framework."
+readme = "README.md"
+authors = [{ name = "David Juriga" }]
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+keywords = ["windows", "diagnostics", "performance", "etw", "monitoring"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: System Administrators",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Benchmark",
+]
+dependencies = [
+    "psutil==7.2.2",
+    "Jinja2==3.1.6",
+    "pywin32==311",
+]
+
+[project.optional-dependencies]
+build = [
+    "pyinstaller==6.20.0",
+    "Pillow==12.2.0",
+]
+test = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+sysspecter = "sysspecter.cli:main"
+
+[project.gui-scripts]
+sysspecter-gui = "sysspecter.gui.app:run_gui"
+
+[tool.setuptools]
+packages = [
+    "sysspecter",
+    "sysspecter.analyzer",
+    "sysspecter.collector",
+    "sysspecter.comparer",
+    "sysspecter.gui",
+    "sysspecter.reporter",
+    "sysspecter.splitter",
+]
+
+[tool.setuptools.package-data]
+sysspecter = ["py.typed"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-q"
