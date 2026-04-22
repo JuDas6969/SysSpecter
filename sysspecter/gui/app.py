@@ -68,8 +68,13 @@ class App:
 
         about = ttk.Frame(self.notebook, padding=16)
         self.notebook.add(about, text="About")
-        lbl = tk.Text(about, wrap="word", height=14, relief="flat",
-                      background=about.cget("background"))
+        # ttk.Frame has no -background option; let Text use its default (white)
+        # or pull the themed backdrop if available.
+        try:
+            bg = ttk.Style().lookup("TFrame", "background") or "#f0f0f0"
+        except tk.TclError:
+            bg = "#f0f0f0"
+        lbl = tk.Text(about, wrap="word", height=14, relief="flat", background=bg)
         lbl.insert("1.0", _ABOUT_TEXT)
         lbl.configure(state="disabled")
         lbl.pack(fill="both", expand=True)
