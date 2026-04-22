@@ -18,6 +18,36 @@ def _score_val(scores: dict[str, Any], key: str) -> float | None:
         return None
 
 
+def _hw_summary(rd: Any) -> dict[str, Any]:
+    """Extract compact hardware columns for matrix rows from RunData.static."""
+    from .diagnosis import classify_disk_tier  # local import avoids cycle
+
+    static = getattr(rd, "static", None) or {}
+    cpus = ((static.get("cpu") or {}).get("cpus") or [])
+    cpu = cpus[0] if cpus else {}
+    mem = static.get("memory") or {}
+    ram_gb = None
+    try:
+        ram_gb = round(int(mem.get("total_bytes") or 0) / (1024 ** 3), 1) or None
+    except (TypeError, ValueError):
+        ram_gb = None
+    disks = static.get("disks") or []
+    phys = [d.get("_physical_drive") for d in disks if isinstance(d, dict) and d.get("_physical_drive")]
+    primary_disk = None
+    if phys:
+        def _size(d: dict[str, Any]) -> int:
+            try:
+                return int(d.get("Size") or 0)
+            except (TypeError, ValueError):
+                return 0
+        primary_disk = max(phys, key=_size)
+    return {
+        "cpu_model": (cpu.get("Name") or "").strip() or None,
+        "ram_gb": ram_gb,
+        "primary_disk_tier": classify_disk_tier(primary_disk),
+    }
+
+
 def build_matrix(runs: list[dict[str, Any]]) -> dict[str, Any]:
     """runs = [{"manifest":..., "scores":..., "findings":..., "rd": RunData}, ...]"""
     rows: list[dict[str, Any]] = []
@@ -30,6 +60,7 @@ def build_matrix(runs: list[dict[str, Any]]) -> dict[str, Any]:
         mem_vals = [row.get("mem_percent") or 0.0 for row in rd.system_rows]
         disk_vals = [row.get("disk_active_pct_est") or 0.0 for row in rd.system_rows]
         lat_vals = [row.get("avg_ms") for row in rd.latency_rows if row.get("avg_ms") is not None]
+        hw = _hw_summary(rd)
         rows.append({
             "run_id": m.get("run_id"),
             "hostname": m.get("hostname"),
@@ -37,6 +68,9 @@ def build_matrix(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "tags": ",".join(m.get("tags") or []),
             "duration_s": m.get("duration_actual_seconds"),
             "samples": len(rd.system_rows),
+            "cpu_model": hw["cpu_model"],
+            "ram_gb": hw["ram_gb"],
+            "primary_disk_tier": hw["primary_disk_tier"],
             "overall": _score_val(s, "overall"),
             "stability": _score_val(s, "stability"),
             "efficiency": _score_val(s, "efficiency"),

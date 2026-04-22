@@ -10,8 +10,11 @@ from ..logging_setup import get_logger
 from ..paths import build_comparison_paths
 from ..reporter.json_export import atomic_write_json
 from .compare_report import build_comparison_report
+from .diagnosis import bottleneck_comparison, generate_hypotheses, generate_recommendations
 from .loader import load_run_full
 from .matrix import build_matrix, write_matrix_csv
+from .mode import detect_mode, mode_label
+from .static_diff import diff_autoruns, diff_config, diff_hardware, diff_software
 
 
 def _explain_differences(runs: list[dict[str, Any]], matrix: dict[str, Any]) -> list[dict[str, Any]]:
@@ -105,13 +108,26 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
     paths = build_comparison_paths(output_root)
     logger = get_logger("comparer", os.path.join(paths.comparison_dir, "comparer.log"))
 
+    mode = detect_mode(loaded)
+    logger.info("detected comparison mode: %s", mode)
+
     matrix = build_matrix(loaded)
     write_matrix_csv(matrix, paths.matrix_csv)
 
     differences = _explain_differences(loaded, matrix)
     problems = _unique_and_common_problems(loaded)
 
+    hw_diff = diff_hardware(loaded)
+    sw_diff = diff_software(loaded)
+    autoruns_diff = diff_autoruns(loaded)
+    cfg_diff = diff_config(loaded)
+    bottlenecks = bottleneck_comparison(matrix)
+    hypotheses = generate_hypotheses(loaded, matrix, hw_diff, sw_diff, cfg_diff)
+    recommendations = generate_recommendations(hypotheses)
+
     comparison_findings = {
+        "mode": mode,
+        "mode_label": mode_label(mode),
         "runs": [
             {
                 "run_id": r["manifest"].get("run_id"),
@@ -126,6 +142,15 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         "rankings": matrix["rankings"],
         "pairwise_observations": differences,
         "common_and_unique_problems": problems,
+        "static_diff": {
+            "hardware": hw_diff,
+            "software": sw_diff,
+            "autoruns": autoruns_diff,
+            "config": cfg_diff,
+        },
+        "bottleneck_comparison": bottlenecks,
+        "root_causes": hypotheses,
+        "recommendations": recommendations,
     }
 
     atomic_write_json(paths.findings, comparison_findings)
@@ -144,8 +169,19 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         "comparison_id": paths.comparison_id,
         "started_at": _dt.datetime.now().isoformat(timespec="seconds"),
         "input_runs": run_dirs,
+        "mode": mode,
     })
 
-    build_comparison_report(paths, loaded, matrix, differences, problems, comparison_scores)
+    build_comparison_report(
+        paths, loaded, matrix, differences, problems, comparison_scores,
+        mode=mode,
+        hw_diff=hw_diff,
+        sw_diff=sw_diff,
+        autoruns_diff=autoruns_diff,
+        cfg_diff=cfg_diff,
+        bottlenecks=bottlenecks,
+        hypotheses=hypotheses,
+        recommendations=recommendations,
+    )
     logger.info("comparison complete: %s", paths.comparison_dir)
     return paths.comparison_dir
