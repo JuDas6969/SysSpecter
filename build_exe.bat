@@ -34,7 +34,7 @@ if errorlevel 1 (
 
 "%PY%" -c "import PIL" >NUL 2>&1
 if errorlevel 1 (
-  echo  Installing Pillow into the venv (needed for icon conversion)...
+  echo  Installing Pillow into the venv...
   "%PY%" -m pip install --upgrade Pillow
   if errorlevel 1 (
     echo  ERROR: pip install Pillow failed.
@@ -45,11 +45,9 @@ if errorlevel 1 (
 if exist "%HERE%assets\icon.png" (
   echo  Generating multi-resolution icon.ico from assets\icon.png...
   "%PY%" "%HERE%tools\make_icon.py"
-  if errorlevel 1 (
-    echo  WARNING: icon conversion failed; EXE will have the default icon.
-  )
+  if errorlevel 1 echo  WARNING: icon conversion failed; EXE will have the default icon.
 ) else (
-  echo  [skip] No assets\icon.png -- EXE will have the default icon.
+  echo  [skip] No assets\icon.png found. EXE will have the default icon.
 )
 
 echo  Cleaning previous build artifacts...
