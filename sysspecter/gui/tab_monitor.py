@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
+import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
@@ -11,6 +13,19 @@ from .duration import DurationParseError, format_duration, parse_duration
 from .runner import SubprocessRunner
 from .tooltip import attach as tooltip
 from .widgets import LogPane
+
+
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
+    except Exception:
+        return False
+
+
+_HEARTBEAT_RE = re.compile(
+    r"\[laeuft\]\s+(\d+)m(\d+)s\s+"
+    r"(?:(\d+\.\d)% von (\d+)s|manueller Stopp)"
+)
 
 
 _TT_MODE = (
@@ -201,8 +216,20 @@ class MonitorTab(ttk.Frame):
         tooltip(all3_btn, _TT_ALL3)
 
         # --- Actions
+        # Admin warning banner
+        if not _is_admin():
+            warn = ttk.Label(
+                self,
+                text=("⚠ Not running as Administrator — ETW disk I/O, some WMI "
+                      "classes, and handle counts on protected processes are unavailable."),
+                foreground="#a8071a", background="#fff1f0",
+                padding=(10, 6),
+            )
+            warn.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+
+        # --- Actions
         actions = ttk.Frame(self)
-        actions.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        actions.grid(row=3, column=0, sticky="ew", pady=(0, 8))
         self.start_btn = ttk.Button(actions, text="Start monitor", command=self._start)
         self.start_btn.grid(row=0, column=0, padx=(0, 8))
         tooltip(self.start_btn, _TT_START)
@@ -215,9 +242,23 @@ class MonitorTab(ttk.Frame):
             row=0, column=2, padx=(12, 0),
         )
 
+        # --- Progress bar
+        progress_row = ttk.Frame(self)
+        progress_row.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        progress_row.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(progress_row, mode="determinate", maximum=100)
+        self.progress.grid(row=0, column=0, sticky="ew")
+        self.progress_label = tk.StringVar(value="")
+        ttk.Label(progress_row, textvariable=self.progress_label,
+                  foreground="#555", width=24, anchor="e").grid(
+            row=0, column=1, padx=(8, 0),
+        )
+
         ttk.Label(self, text="Live output:").grid(row=98, column=0, sticky="w")
         self.log = LogPane(self)
         self.log.grid(row=99, column=0, sticky="nsew")
+        # Tap the log stream so the progress bar updates from heartbeats.
+        self.log.on_line = self._on_log_line
 
     # --------------------------------------------------------------- Helpers
     def _refresh_preview(self) -> None:
@@ -327,5 +368,36 @@ class MonitorTab(ttk.Frame):
         self.status.set(f"finished (rc={rc})")
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
+        try:
+            self.progress.configure(value=100 if rc == 0 else 0)
+            self.progress_label.set("")
+        except Exception:
+            pass
         if self._on_run_finished:
             self._on_run_finished()
+
+    def _on_log_line(self, line: str) -> None:
+        """Update progress bar + ETA from the collector's heartbeat lines."""
+        m = _HEARTBEAT_RE.search(line)
+        if not m:
+            return
+        mins, secs = int(m.group(1)), int(m.group(2))
+        elapsed = mins * 60 + secs
+        pct_str = m.group(3)
+        total_str = m.group(4)
+        if pct_str and total_str:
+            try:
+                pct = float(pct_str)
+                total = int(total_str)
+            except ValueError:
+                return
+            self.progress.configure(mode="determinate", value=pct)
+            remaining = max(0, total - elapsed)
+            rm_min, rm_sec = divmod(remaining, 60)
+            self.progress_label.set(f"{pct:.0f}% — {rm_min:02d}:{rm_sec:02d} left")
+        else:
+            # manual stop — indeterminate
+            if self.progress.cget("mode") != "indeterminate":
+                self.progress.configure(mode="indeterminate")
+                self.progress.start(80)
+            self.progress_label.set(f"running {mins:02d}:{secs:02d}")

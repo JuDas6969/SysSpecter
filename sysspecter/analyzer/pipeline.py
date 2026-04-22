@@ -38,6 +38,53 @@ def analyze_run(
         logger.info("loading run %s", run_dir)
     rd = load_run(run_dir, max_rel_seconds=max_rel_seconds, min_rel_seconds=min_rel_seconds)
 
+    # Sparse-data guard: very short runs have no statistical signal and can
+    # trip the scoring functions. Emit a minimal findings/scores set and return.
+    if len(rd.system_rows) < 30:
+        logger.warning(
+            "only %d system samples — skipping deep analysis (need >=30 for confidence)",
+            len(rd.system_rows),
+        )
+        findings = {
+            "anomalies": [],
+            "slowdowns": [],
+            "leaks": {"memory": [], "handles": [], "threads": []},
+            "offenders": {},
+            "apps": {},
+            "network_attribution": {"by_app": [], "by_pid": [], "samples": 0},
+            "latency_analysis": {"targets": [], "samples": 0},
+            "gpu_analysis": {"enabled": False},
+            "event_correlation": {"enabled": False},
+            "etw_disk": {"enabled": False},
+            "process_churn": {"total_process_starts": 0},
+            "bottlenecks": {"primary": None, "secondary_bottlenecks": [], "scores": {}, "reasons": {}},
+            "summary": {
+                "verdict": (
+                    f"Not enough samples for a confident verdict "
+                    f"({len(rd.system_rows)} system rows; need at least 30)."
+                ),
+                "total_anomalies": 0,
+                "total_slowdown_windows": 0,
+                "total_leak_candidates": 0,
+                "primary_bottleneck": None,
+                "insufficient_data": True,
+            },
+        }
+        scores = {
+            "overall": None, "stability": None, "efficiency": None,
+            "workload_suitability": None, "security_overhead": None,
+            "network_impact": None, "resource_hygiene": None,
+            "confidence": "low",
+            "sample_count": len(rd.system_rows),
+            "weights": {},
+            "primary_bottleneck": None,
+            "secondary_bottlenecks": [],
+        }
+        os.makedirs(out_dir, exist_ok=True)
+        atomic_write_json(os.path.join(out_dir, "findings.json"), findings)
+        atomic_write_json(os.path.join(out_dir, "scores.json"), scores)
+        return {"findings": findings, "scores": scores}
+
     thresholds_data = (rd.manifest or {}).get("thresholds") or {}
     valid_fields = set(Thresholds().__dict__.keys())
     filtered = {k: v for k, v in thresholds_data.items() if k in valid_fields}

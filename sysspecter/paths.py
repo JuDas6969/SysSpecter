@@ -119,7 +119,32 @@ class RunPaths:
         return os.path.join(self.logs_dir, "reporter.log")
 
 
+class OutputRootError(OSError):
+    """Raised when the output root is not usable (missing / read-only / bad path)."""
+
+
+def _assert_writable(path: str) -> None:
+    """Verify we can create files under `path`. Raise OutputRootError if not."""
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        raise OutputRootError(
+            f"cannot create output folder {path!r}: {e}"
+        ) from e
+    probe = os.path.join(path, f".sysspecter_probe_{uuid.uuid4().hex[:6]}")
+    try:
+        with open(probe, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(probe)
+    except OSError as e:
+        raise OutputRootError(
+            f"output folder {path!r} is not writable: {e}. "
+            f"If this is a USB stick, make sure it is plugged in and not read-only."
+        ) from e
+
+
 def build_run_paths(output_root: str) -> RunPaths:
+    _assert_writable(os.path.join(output_root, "Runs"))
     hostname = socket.gethostname().upper()
     started_at = _dt.datetime.now()
     run_id = started_at.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]

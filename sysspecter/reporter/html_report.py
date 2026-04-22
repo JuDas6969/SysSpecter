@@ -32,6 +32,9 @@ h3 { margin-top: 24px; font-size: 16px; }
 .brand-bar { height: 4px; border-radius: 2px;
              background: linear-gradient(90deg, #06b6d4 0%, #6366f1 50%, #a855f7 100%);
              margin: 0 0 14px 0; }
+.banner { padding: 10px 14px; border-radius: 4px; margin: 8px 0 14px 0; font-size: 14px; }
+.banner-warn { background: #fff1f0; border-left: 4px solid #cf1322; color: #5a0f1c; }
+.banner-info { background: #fffbe6; border-left: 4px solid #faad14; color: #614700; }
 .card { background: #fff; border: 1px solid #e2e6ee; border-radius: 6px;
         padding: 14px 18px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
 .kvs { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px,1fr)); gap: 6px 20px; }
@@ -85,7 +88,26 @@ _TEMPLATE = """<!DOCTYPE html>
 
 <div class="brand-bar"></div>
 <h1>SysSpecter report — {{ manifest.hostname }}</h1>
-<p class="tagline">See everything. Find the cause.</p>
+<p class="tagline">See everything. Find the cause.
+  &nbsp;&middot;&nbsp; SysSpecter v{{ manifest.sysspecter_version or '?' }}</p>
+
+{% if banner_admin %}
+<div class="banner banner-warn">
+  <b>Running as standard user.</b> Some measurements are unavailable:
+  {{ banner_admin }}. Re-run as Administrator for full coverage.
+</div>
+{% endif %}
+{% if banner_degraded %}
+<div class="banner banner-warn">
+  <b>Collector degraded.</b> {{ banner_degraded }}
+</div>
+{% endif %}
+{% if banner_low_confidence %}
+<div class="banner banner-info">
+  <b>Low sample count.</b> {{ banner_low_confidence }}
+</div>
+{% endif %}
+
 <div class="card">
   <div class="kvs">
     <div class="kv"><div class="k">Run ID</div><div class="v">{{ manifest.run_id }}</div></div>
@@ -98,6 +120,7 @@ _TEMPLATE = """<!DOCTYPE html>
     <div class="kv"><div class="k">Privilege</div><div class="v">{{ manifest.privilege_level }}</div></div>
     <div class="kv"><div class="k">Target</div><div class="v">{{ target_text }}</div></div>
     <div class="kv"><div class="k">Tags</div><div class="v">{{ manifest.tags | join(', ') or '—' }}</div></div>
+    <div class="kv"><div class="k">Tool version</div><div class="v">{{ manifest.sysspecter_version or '—' }}</div></div>
   </div>
 </div>
 
@@ -890,6 +913,30 @@ def _render(
 
     recommendations = _build_recommendations(findings, scores, static)
 
+    # Banners: admin-missing, collector-degraded, low-confidence
+    banner_admin = ""
+    if (manifest.get("privilege_level") or "user") != "admin":
+        deg = []
+        phase3 = manifest.get("phase3") or {}
+        if phase3.get("etw_disk"):
+            deg.append("per-process disk I/O (ETW)")
+        deg.append("handle counts on protected processes")
+        deg.append("some WMI classes")
+        banner_admin = ", ".join(deg)
+    deg_map = manifest.get("collector_degraded") or {}
+    banner_degraded = ""
+    if isinstance(deg_map, dict) and deg_map:
+        parts = [f"{k}: {v}" for k, v in deg_map.items()]
+        banner_degraded = "; ".join(parts)
+    banner_low_confidence = ""
+    summary = (findings.get("summary") or {}) if isinstance(findings, dict) else {}
+    if summary.get("insufficient_data"):
+        banner_low_confidence = summary.get("verdict") or "Not enough samples for confident analysis."
+    elif len(system_rows) < 60 and len(system_rows) > 0:
+        banner_low_confidence = (
+            f"Only {len(system_rows)} system samples captured — findings have low statistical weight."
+        )
+
     return tpl.render(
         css=_CSS,
         manifest=manifest,
@@ -917,6 +964,9 @@ def _render(
         offender_sections=offender_sections,
         app_sections=app_sections,
         recommendations=recommendations,
+        banner_admin=banner_admin,
+        banner_degraded=banner_degraded,
+        banner_low_confidence=banner_low_confidence,
     )
 
 

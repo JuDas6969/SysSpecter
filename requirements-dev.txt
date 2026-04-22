@@ -1,5 +1,5 @@
 -r requirements.txt
 
-# Build-only tooling -- not needed at runtime.
-pyinstaller>=6.11
-Pillow>=10.4   # used by tools/make_icon.py to convert assets/icon.png -> assets/icon.ico
+# Build-only tooling (not included in the shipped EXE).
+pyinstaller==6.20.0
+Pillow==12.2.0

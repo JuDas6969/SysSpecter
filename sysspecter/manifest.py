@@ -11,6 +11,7 @@ import socket
 import sys
 from typing import Any
 
+from . import __version__ as _SS_VERSION
 from .config import Config
 from .paths import RunPaths
 
@@ -25,6 +26,7 @@ def is_admin() -> bool:
 def build_run_manifest(paths: RunPaths, config: Config) -> dict[str, Any]:
     return {
         "schema_version": 1,
+        "sysspecter_version": _SS_VERSION,
         "run_id": paths.run_id,
         "hostname": paths.hostname,
         "fqdn": socket.getfqdn(),
@@ -54,6 +56,8 @@ def build_run_manifest(paths: RunPaths, config: Config) -> dict[str, Any]:
             "event_logs": config.enable_event_logs,
             "etw_disk": config.enable_etw_disk,
         },
+        # populated by samplers if they fail / degrade; see runner.py
+        "collector_degraded": {},
     }
 
 
@@ -78,6 +82,26 @@ def write_manifest(manifest_path: str, manifest: dict[str, Any]) -> None:
     tmp = manifest_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
+    os.replace(tmp, manifest_path)
+
+
+def mark_degraded(manifest_path: str, collector: str, reason: str) -> None:
+    """Record a non-fatal collector failure in the manifest so the report
+    can surface a 'measurement degraded' banner. Safe to call before or
+    after the run ends."""
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    deg = data.setdefault("collector_degraded", {})
+    if not isinstance(deg, dict):
+        deg = {}
+        data["collector_degraded"] = deg
+    deg[collector] = reason
+    tmp = manifest_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
     os.replace(tmp, manifest_path)
 
 

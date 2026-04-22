@@ -30,11 +30,28 @@ def _have_tool(name: str) -> bool:
 
 
 class EtwDiskSession:
+    # The NT Kernel Logger is a reserved session; the OS rejects any other
+    # session name when capturing kernel events via `-p "Windows Kernel Trace"`.
+    # There can only be one kernel logger session system-wide at a time.
+    SESSION_NAME = "NT Kernel Logger"
+
     def __init__(self, etl_path: str, logger: logging.Logger | None = None):
         self.etl_path = etl_path
         self.logger = logger
-        self.session_name = f"sysspecter_disk_{os.getpid()}"
+        self.session_name = self.SESSION_NAME
         self.started = False
+
+    def _stop_stale_session(self) -> None:
+        """If a previous kernel logger is still active, stop it so we can start fresh."""
+        try:
+            subprocess.run(
+                ["logman.exe", "stop", self.session_name, "-ets"],
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=10.0, creationflags=CREATE_NO_WINDOW,
+            )
+        except Exception:
+            pass
 
     def start(self) -> bool:
         if not _have_tool("logman.exe"):
@@ -42,11 +59,13 @@ class EtwDiskSession:
                 self.logger.warning("ETW: logman.exe not on PATH")
             return False
 
-        # Providers keyword NT Kernel Logger "disk" gives FileIo + DiskIo events.
-        # Using `logman create trace -ets` with `-p "Windows Kernel Trace" 0x301`
-        # (PROCESS | DISK_IO | FILE_IO) captures what we need to attribute bytes
-        # to PIDs. -nb/-bs set buffer sizing; -f bincirc with max file size keeps
-        # the .etl bounded.
+        # Providers keyword "Windows Kernel Trace" 0x301 (PROCESS | DISK_IO |
+        # FILE_IO) captures what we need to attribute bytes to PIDs.
+        # The session MUST be named "NT Kernel Logger" -- any other name is
+        # rejected by the OS with "session name provided is invalid".
+        # Clean up a stale session first in case a previous run was killed.
+        self._stop_stale_session()
+
         etl_dir = os.path.dirname(self.etl_path)
         os.makedirs(etl_dir, exist_ok=True)
         cmd = [

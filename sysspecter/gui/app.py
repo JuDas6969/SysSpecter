@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 import sys
 import tkinter as tk
-from tkinter import ttk
+import traceback
+from tkinter import messagebox, ttk
 from typing import Optional
 
 from ..config import DEFAULT_OUTPUT_ROOT
@@ -122,6 +123,10 @@ class App:
             foreground="#6b7a99", font=("Segoe UI", 8),
         ).pack(side="right")
 
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # Route unhandled Tk callback exceptions into a user-visible dialog.
+        self.root.report_callback_exception = self._on_tk_exception
+
     # --------------------------------------------------------------- chrome
     def _apply_window_icon(self) -> None:
         if not self._assets:
@@ -175,6 +180,74 @@ class App:
             self.compare_tab.refresh()
         except Exception:
             pass
+
+    def _active_subprocesses(self) -> list[str]:
+        """Return a short description of any still-running child subprocesses."""
+        still: list[str] = []
+        m_runner = getattr(self.monitor_tab, "_runner", None)
+        if m_runner is not None and m_runner.is_running():
+            still.append("Monitor")
+        for tab_name, attr in (("Runs", "_runner"), ("Compare", "_runner")):
+            r = getattr(self.runs_tab if tab_name == "Runs" else self.compare_tab, attr, None)
+            if r is not None and r.is_running():
+                still.append(tab_name)
+        return still
+
+    def _on_close(self) -> None:
+        running = self._active_subprocesses()
+        if not running:
+            self.root.destroy()
+            return
+        msg = (
+            "These operations are still running:\n\n"
+            + "\n".join(f"  - {r}" for r in running)
+            + "\n\nClosing now will stop them immediately. Reports for monitor "
+              "sessions that have not finalised will be missing.\n\n"
+              "Stop everything and close?"
+        )
+        if not messagebox.askyesno("SysSpecter — still running", msg):
+            return
+        # Try graceful stop first so monitor finalises, then force-kill on timeout.
+        m_runner = getattr(self.monitor_tab, "_runner", None)
+        if m_runner is not None and m_runner.is_running():
+            try:
+                m_runner.send_ctrl_break()
+            except Exception:
+                pass
+        for tab in (self.runs_tab, self.compare_tab):
+            r = getattr(tab, "_runner", None)
+            if r is not None and r.is_running():
+                try:
+                    r.kill()
+                except Exception:
+                    pass
+        # give the monitor a couple of seconds to finalise
+        self.root.after(2500, self._force_close)
+
+    def _force_close(self) -> None:
+        m_runner = getattr(self.monitor_tab, "_runner", None)
+        if m_runner is not None and m_runner.is_running():
+            try:
+                m_runner.kill()
+            except Exception:
+                pass
+        self.root.destroy()
+
+    def _on_tk_exception(self, exc_type, exc_value, exc_tb) -> None:
+        tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        short = f"{exc_type.__name__}: {exc_value}"
+        try:
+            messagebox.showerror(
+                "SysSpecter — unexpected error",
+                f"{short}\n\nFull traceback has been printed to the launching "
+                f"console. If you can reproduce this, please send the traceback "
+                f"to the maintainer.\n\n{tb.splitlines()[-1] if tb.splitlines() else ''}",
+            )
+        except Exception:
+            pass
+        # also dump to stderr so users launching via sysspecter.bat gui see it
+        sys.stderr.write(tb)
+        sys.stderr.flush()
 
     def mainloop(self) -> None:
         self.root.mainloop()

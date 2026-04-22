@@ -24,7 +24,7 @@ from ..config import (
     Config, EXPENSIVE_COLLECTOR_INTERVAL, LATENCY_PROBE_INTERVAL,
 )
 from ..logging_setup import get_logger
-from ..manifest import build_run_manifest, write_manifest, update_manifest_end
+from ..manifest import build_run_manifest, mark_degraded, write_manifest, update_manifest_end
 from ..paths import build_run_paths
 from ..reporter.csv_export import (
     StreamingCSV, SYSTEM_FIELDS, PROCESS_FIELDS, NETWORK_FIELDS, LATENCY_FIELDS,
@@ -142,6 +142,8 @@ def run_monitor(config: Config) -> str:
         etw_session = EtwDiskSession(paths.etw_etl, logger=logger)
         if not etw_session.start():
             logger.warning("Phase 3: ETW disk session could not be started (admin required?)")
+            mark_degraded(paths.manifest, "etw_disk",
+                          "session failed to start (admin required?)")
             etw_session = None
         else:
             logger.info("Phase 3: ETW disk capture started")
@@ -158,6 +160,7 @@ def run_monitor(config: Config) -> str:
     next_latency = started_mono + 5.0  # first latency probe shortly after start
     next_flush = started_mono + 10.0
     next_heartbeat = started_mono + 2.0
+    next_log_heartbeat = started_mono + 10.0  # touches collector.log for the stop-detector
 
     stop_reason = "completed"
     sample_count = 0
@@ -223,6 +226,7 @@ def run_monitor(config: Config) -> str:
                     connections_csv.write_many([conn_sample_to_dict(c) for c in conn_samples])
                 except Exception as e:
                     logger.warning("connection snapshot failed: %s", e)
+                    mark_degraded(paths.manifest, "connections", f"{type(e).__name__}: {e}")
 
                 if config.enable_gpu and gpu_engine_csv is not None:
                     try:
@@ -235,6 +239,7 @@ def run_monitor(config: Config) -> str:
                             gpu_adapter_csv.write_many([gpu_adapter_to_dict(a) for a in adp])
                     except Exception as e:
                         logger.warning("gpu snapshot failed: %s", e)
+                        mark_degraded(paths.manifest, "gpu", f"{type(e).__name__}: {e}")
 
                 next_expensive = now + EXPENSIVE_COLLECTOR_INTERVAL
 
@@ -253,6 +258,16 @@ def run_monitor(config: Config) -> str:
             if now >= next_heartbeat:
                 _print_heartbeat(rel, config.duration, sys_sample)
                 next_heartbeat = now + 5.0
+
+            if now >= next_log_heartbeat:
+                # Touch collector.log so sysspecter.bat stop can still find us
+                # during long quiet periods where no events get logged.
+                logger.info(
+                    "heartbeat rel=%.1fs samples=%d cpu=%.1f%% mem=%.1f%%",
+                    rel, sample_count, sys_sample.cpu_total_pct or 0.0,
+                    sys_sample.mem_percent or 0.0,
+                )
+                next_log_heartbeat = now + 10.0
 
             sample_count += 1
 
@@ -297,6 +312,7 @@ def run_monitor(config: Config) -> str:
                 atomic_write_json(paths.etw_disk_summary, summary)
             except Exception as e:
                 logger.warning("Phase 3: ETW finalize failed: %s", e)
+                mark_degraded(paths.manifest, "etw_disk", f"finalize failed: {type(e).__name__}")
 
         if config.enable_event_logs:
             try:
@@ -305,6 +321,8 @@ def run_monitor(config: Config) -> str:
                 atomic_write_json(paths.event_log_json, evs)
             except Exception as e:
                 logger.warning("Phase 3: event log collection failed: %s", e)
+                mark_degraded(paths.manifest, "event_logs",
+                              f"query failed: {type(e).__name__}: {e}")
 
         update_manifest_end(paths.manifest, ended_at, stop_reason, actual_duration)
 

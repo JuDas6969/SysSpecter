@@ -153,7 +153,14 @@ def _cmd_monitor(args: argparse.Namespace) -> int:
         enable_event_logs=args.event_logs or args.phase3,
         enable_etw_disk=args.etw or args.phase3,
     )
-    run_monitor(config)
+    try:
+        run_monitor(config)
+    except Exception as e:
+        from sysspecter.paths import OutputRootError
+        if isinstance(e, OutputRootError):
+            print(f"\nERROR: {e}\n", file=sys.stderr)
+            return 2
+        raise
     return 0
 
 
@@ -186,12 +193,13 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _find_active_run(output_root: str, freshness_seconds: float = 30.0) -> str | None:
+def _find_active_run(output_root: str, freshness_seconds: float = 120.0) -> str | None:
     """Return the path of the currently running monitor session.
 
     A run is considered "active" when its collector.log was written to within
-    the last `freshness_seconds`. This avoids targeting stale folders from
-    previous runs that were killed without finalizing.
+    the last `freshness_seconds`. The collector emits a throttled heartbeat
+    log entry every 10 s so this detector keeps working even during long
+    quiet stretches.
     """
     import time
 

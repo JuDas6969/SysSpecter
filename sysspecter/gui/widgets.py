@@ -28,12 +28,21 @@ class LogPane(ttk.Frame):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
         self._pollers: list[str] = []
+        # Optional hook for callers who want to react to each new line
+        # (progress bars, status fields, etc.). Set this attribute after
+        # constructing the widget.
+        self.on_line: Callable[[str], None] | None = None
 
     def append(self, line: str) -> None:
         self.text.configure(state="normal")
         self.text.insert("end", line + "\n")
         self.text.see("end")
         self.text.configure(state="disabled")
+        if self.on_line is not None:
+            try:
+                self.on_line(line)
+            except Exception:
+                pass
 
     def clear(self) -> None:
         self.text.configure(state="normal")

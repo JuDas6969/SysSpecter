@@ -22,22 +22,14 @@ echo ============================================================
 echo  SysSpecter -- packaging single-file EXE
 echo ============================================================
 
+REM Make sure build-time dependencies are present at the pinned versions.
+REM No --upgrade: a clean reinstall only fires if something is missing.
 "%PY%" -m pip show pyinstaller >NUL 2>&1
 if errorlevel 1 (
-  echo  Installing PyInstaller into the venv...
-  "%PY%" -m pip install --upgrade pyinstaller
+  echo  Installing pinned build-time dependencies from requirements-dev.txt...
+  "%PY%" -m pip install -r "%HERE%requirements-dev.txt"
   if errorlevel 1 (
-    echo  ERROR: pip install pyinstaller failed.
-    exit /b 1
-  )
-)
-
-"%PY%" -c "import PIL" >NUL 2>&1
-if errorlevel 1 (
-  echo  Installing Pillow into the venv...
-  "%PY%" -m pip install --upgrade Pillow
-  if errorlevel 1 (
-    echo  ERROR: pip install Pillow failed.
+    echo  ERROR: pip install build requirements failed.
     exit /b 1
   )
 )
@@ -66,6 +58,10 @@ if not exist "%HERE%dist\SysSpecter.exe" (
   echo  ERROR: expected dist\SysSpecter.exe was not produced.
   exit /b 1
 )
+
+REM Bundle LICENSE + third-party notices next to the EXE.
+if exist "%HERE%LICENSE" copy /Y "%HERE%LICENSE" "%HERE%dist\LICENSE.txt" >NUL
+if exist "%HERE%THIRD_PARTY_NOTICES.md" copy /Y "%HERE%THIRD_PARTY_NOTICES.md" "%HERE%dist\THIRD_PARTY_NOTICES.md" >NUL
 
 echo.
 echo ============================================================
