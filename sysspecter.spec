@@ -8,6 +8,8 @@
 # technician just copies it to a USB stick and runs it on any Windows box.
 # CLI usage is preserved: `SysSpecter.exe monitor --mode support` etc.
 
+import os
+
 from PyInstaller.utils.hooks import collect_submodules
 
 hiddenimports = []
@@ -19,16 +21,28 @@ hiddenimports += collect_submodules("jinja2")
 hiddenimports += collect_submodules("sysspecter")
 
 
+# Bundle logos / icons so the GUI can show them inside the frozen EXE.
+_datas = []
+for name in ("logo.png", "logo_long.png", "icon.png"):
+    p = os.path.join("assets", name)
+    if os.path.exists(p):
+        _datas.append((p, "assets"))
+
+_icon_path = os.path.join("assets", "icon.ico")
+_icon = _icon_path if os.path.exists(_icon_path) else None
+
+
 a = Analysis(
     ["sysspecter.py"],
     pathex=["."],
     binaries=[],
-    datas=[],
+    datas=_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     # Keep the binary lean -- none of these are needed for sysspecter.
+    # Pillow (PIL) is build-only (make_icon.py) so we exclude it from the EXE too.
     excludes=[
         "numpy", "pandas", "matplotlib", "scipy", "PIL", "PySide2",
         "PySide6", "PyQt5", "PyQt6", "IPython", "pytest", "sphinx",
@@ -58,4 +72,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=_icon,
 )

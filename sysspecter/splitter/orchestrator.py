@@ -14,6 +14,7 @@ from ..reporter.json_export import atomic_write_json
 from .detect import (
     ChangePoint,
     Phase,
+    auto_min_phase_seconds,
     build_phases,
     change_point_to_dict,
     detect_change_points,
@@ -29,11 +30,11 @@ def _phase_dir_name(phase: Phase) -> str:
 def split_run(
     run_dir: str,
     *,
-    min_phase_seconds: float = 60.0,
-    window_seconds: float = 20.0,
-    step_threshold: float = 12.0,
-    slope_threshold: float = 0.8,
-    proximity_seconds: float = 30.0,
+    min_phase_seconds: float | None = None,
+    window_seconds: float | None = None,
+    step_threshold: float = 6.0,
+    slope_threshold: float = 0.6,
+    proximity_seconds: float | None = None,
     build_subreports: bool = True,
 ) -> dict[str, Any]:
     """Run the full split pipeline on a finished run folder.
@@ -60,6 +61,8 @@ def split_run(
         return {"phases": [], "change_points": [], "reason": msg}
 
     total_duration = float(rd.system_rows[-1].get("rel_seconds") or 0.0)
+    if min_phase_seconds is None:
+        min_phase_seconds = auto_min_phase_seconds(total_duration)
     if total_duration < 2 * min_phase_seconds:
         msg = (f"run too short for splitting ({total_duration:.0f}s < 2*{min_phase_seconds:.0f}s) "
                f"-- treating as single phase")

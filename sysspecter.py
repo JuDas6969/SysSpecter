@@ -96,21 +96,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Split a finished run into phases based on metric change points",
     )
     sp.add_argument("--run", required=True, help="Path to a run folder")
-    sp.add_argument("--min-phase-seconds", type=float, default=60.0,
+    sp.add_argument("--min-phase-seconds", type=float, default=None,
                     dest="min_phase_seconds",
-                    help="Drop/merge phases shorter than this many seconds (default: 60)")
-    sp.add_argument("--window-seconds", type=float, default=20.0,
+                    help="Drop/merge phases shorter than this many seconds. "
+                         "Auto (~5%% of run, clipped to 60 s..1 h) when omitted.")
+    sp.add_argument("--window-seconds", type=float, default=None,
                     dest="window_seconds",
-                    help="Sliding-window size in seconds for change-point detection (default: 20)")
-    sp.add_argument("--step-threshold", type=float, default=12.0,
+                    help="Sliding-window size in seconds for change-point detection. "
+                         "Auto (~2%% of run, clipped to 30 s..10 min) when omitted.")
+    sp.add_argument("--step-threshold", type=float, default=6.0,
                     dest="step_threshold",
-                    help="Minimum mean intensity shift (percent points) to flag a step (default: 12)")
-    sp.add_argument("--slope-threshold", type=float, default=0.8,
+                    help="Minimum per-metric mean shift (percent points) to flag a step (default: 6).")
+    sp.add_argument("--slope-threshold", type=float, default=0.6,
                     dest="slope_threshold",
-                    help="Minimum slope shift per second to flag a regime change (default: 0.8)")
-    sp.add_argument("--proximity-seconds", type=float, default=30.0,
+                    help="Minimum slope shift to flag a regime change (default: 0.6).")
+    sp.add_argument("--proximity-seconds", type=float, default=None,
                     dest="proximity_seconds",
-                    help="Merge change points closer than this many seconds (default: 30)")
+                    help="Merge change points closer than this many seconds. "
+                         "Auto (~2.5%% of run) when omitted.")
     sp.add_argument("--no-subreports", action="store_true", dest="no_subreports",
                     help="Only detect phases; skip generating per-phase HTML reports")
 
@@ -299,7 +302,7 @@ def _cmd_split(args: argparse.Namespace) -> int:
     if not os.path.isdir(run):
         print(f"error: not a directory: {run}", file=sys.stderr)
         return 2
-    if args.min_phase_seconds <= 0:
+    if args.min_phase_seconds is not None and args.min_phase_seconds <= 0:
         print("error: --min-phase-seconds must be > 0", file=sys.stderr)
         return 2
     result = split_run(

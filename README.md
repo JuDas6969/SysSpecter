@@ -2,6 +2,8 @@
 
 > **See everything. Find the cause.**
 
+<p align="center"><img src="assets/logo_long.png" alt="SysSpecter" height="90" /></p>
+
 A Python tool for **evidence-based** Windows performance diagnostics and
 cross-machine comparison. Intended for admins and technicians working on
 "my PC is slow" complaints, Autopilot vs standard-build comparisons, and
@@ -216,3 +218,8 @@ report. Confidence of the diagnosis depends on sample count
 - The tool does not modify system state. Recommendations in the report are
   *observations*, not automated fixes.
 ```
+
+## License / Copyright
+
+© 2026 David Juriga. All rights reserved.
+

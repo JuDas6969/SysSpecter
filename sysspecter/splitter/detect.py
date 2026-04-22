@@ -1,19 +1,23 @@
 """Change-point detection on the system + process timelines.
 
 Approach:
-- Build a 1-D "intensity" signal from cpu/mem/disk. Smooth with EMA.
-- Detect three families of candidates on the intensity signal:
-    step:     rolling-mean delta across an asymmetric window
-    slope:    regime change of the first difference (rising -> flat, etc.)
-    quiet:    sustained drop to a baseline after elevated activity
-- Separately detect "process end" points from per-process timelines:
-  top CPU consumers that sustain near-zero CPU after having been active.
+- Scan each primary metric (CPU, memory, disk) SEPARATELY plus the combined
+  intensity. Emit step-shift and slope-shift candidates per metric, so a
+  regime change that is visible on one metric (e.g. memory going from
+  rising to flat) is not smeared out by the others.
+- Detect "workload_end" when the activity drops from elevated to quiet
+  for a sustained period.
+- Detect "process_end" strictly: only for processes that peaked at >= 40%
+  CPU AND were active for >= 120 s; keep the strongest handful.
+- Window size, step threshold, and min_phase_seconds auto-scale with the
+  total run duration: a 10-minute run needs tight windows, a 13-hour run
+  needs ~10-minute windows to stop treating every sample as noise.
 - Merge candidates within a proximity window, keeping the strongest.
-- Drop candidates whose surrounding phase would be shorter than min_phase_seconds.
+- Drop candidates whose surrounding phase would be shorter than
+  min_phase_seconds.
 
-The algorithm is explainable: every candidate carries the reason + a numeric
-evidence value, so downstream UX can show *why* a split happened. No numpy
-dependency (the project already avoids heavy deps).
+Every candidate carries a reason + evidence string so the downstream UX
+can show *why* a split happened.
 """
 
 from __future__ import annotations
@@ -40,36 +44,66 @@ def _ema(values: list[float], alpha: float) -> list[float]:
     return out
 
 
-def _combined_intensity(system_rows: list[dict[str, Any]]) -> tuple[list[float], list[float]]:
+def _extract_series(system_rows: list[dict[str, Any]]) -> dict[str, tuple[list[float], list[float]]]:
     xs: list[float] = []
-    ys: list[float] = []
+    cpu_y: list[float] = []
+    mem_y: list[float] = []
+    disk_y: list[float] = []
     for r in system_rows:
         rel = r.get("rel_seconds")
         if rel is None:
             continue
-        cpu = float(r.get("cpu_total_pct") or 0.0)
-        mem = float(r.get("mem_percent") or 0.0)
-        disk = float(r.get("disk_active_pct_est") or 0.0)
         xs.append(float(rel))
-        ys.append(0.5 * cpu + 0.3 * mem + 0.2 * disk)
-    return xs, ys
+        cpu_y.append(float(r.get("cpu_total_pct") or 0.0))
+        mem_y.append(float(r.get("mem_percent") or 0.0))
+        disk_y.append(float(r.get("disk_active_pct_est") or 0.0))
+    intensity = [0.5 * c + 0.3 * m + 0.2 * d for c, m, d in zip(cpu_y, mem_y, disk_y)]
+    return {
+        "cpu": (xs, cpu_y),
+        "mem": (xs, mem_y),
+        "disk": (xs, disk_y),
+        "intensity": (xs, intensity),
+    }
 
 
 def _mean(vals: list[float]) -> float:
     return sum(vals) / len(vals) if vals else 0.0
 
 
-def _detect_step_and_slope(
+def _auto_window_samples(xs: list[float], window_seconds: float | None) -> tuple[int, float]:
+    """Pick a sample-count window. Uses explicit window_seconds if given, else
+    auto-scales to ~2% of the run's total duration (clipped 30s..600s).
+
+    Average sample spacing is derived from total_duration / (n-1) rather
+    than the first two samples, because an initial jitter at run start
+    can easily mislead a first-pair estimate on a long run.
+    """
+    if len(xs) < 2:
+        return (0, 1.0)
+    total = xs[-1] - xs[0]
+    dt = total / max(1, len(xs) - 1)
+    if dt <= 0:
+        dt = 1.0
+    if window_seconds is None:
+        window_seconds = max(30.0, min(600.0, total * 0.02))
+    w = max(3, int(window_seconds / dt))
+    return w, dt
+
+
+def _detect_step_per_metric(
+    name: str,
     xs: list[float],
     ys_smooth: list[float],
     window: int,
     step_threshold: float,
     slope_threshold: float,
 ) -> list[ChangePoint]:
+    """Flag step (mean shift) and slope (derivative change) events in one metric."""
     out: list[ChangePoint] = []
     n = len(xs)
     if n < 2 * window + 2:
         return out
+
     for i in range(window, n - window):
         left = ys_smooth[i - window:i]
         right = ys_smooth[i:i + window]
@@ -81,40 +115,77 @@ def _detect_step_and_slope(
             direction = "up" if delta > 0 else "down"
             out.append(ChangePoint(
                 rel_seconds=xs[i],
-                reason=f"step_{direction}",
+                reason=f"{name}_step_{direction}",
                 kind="step",
-                evidence=(f"intensity mean shifted from {left_mean:.1f} to {right_mean:.1f} "
-                          f"across ±{int(window)}s"),
+                evidence=(f"{name} mean shifted from {left_mean:.1f} to {right_mean:.1f} "
+                          f"across +/-{int(window)}s"),
                 score=abs(delta),
             ))
-            continue  # skip slope test at exact same point to avoid duplicates
+            continue
 
-        # slope: compare first-diff of left vs right window
         if len(left) >= 2 and len(right) >= 2:
             left_slope = (left[-1] - left[0]) / max(window, 1)
             right_slope = (right[-1] - right[0]) / max(window, 1)
             slope_delta = right_slope - left_slope
             if abs(slope_delta) >= slope_threshold:
-                if left_slope > 0 and abs(right_slope) < 0.2 * abs(left_slope):
-                    reason = "rising_to_flat"
-                elif left_slope < 0 and abs(right_slope) < 0.2 * abs(left_slope):
-                    reason = "falling_to_flat"
-                elif abs(left_slope) < 0.2 * abs(right_slope) and right_slope > 0:
-                    reason = "flat_to_rising"
+                if left_slope > 0 and abs(right_slope) < 0.25 * abs(left_slope):
+                    reason_kind = "rising_to_flat"
+                elif left_slope < 0 and abs(right_slope) < 0.25 * abs(left_slope):
+                    reason_kind = "falling_to_flat"
+                elif abs(left_slope) < 0.25 * abs(right_slope) and right_slope > 0:
+                    reason_kind = "flat_to_rising"
                 elif left_slope > 0 and right_slope < 0:
-                    reason = "rising_to_falling"
+                    reason_kind = "rising_to_falling"
                 elif left_slope < 0 and right_slope > 0:
-                    reason = "falling_to_rising"
+                    reason_kind = "falling_to_rising"
                 else:
-                    reason = "slope_shift"
+                    reason_kind = "slope_shift"
                 out.append(ChangePoint(
                     rel_seconds=xs[i],
-                    reason=reason,
+                    reason=f"{name}_{reason_kind}",
                     kind="slope",
-                    evidence=(f"slope change {left_slope:+.2f} -> {right_slope:+.2f} "
-                              f"(Δ {slope_delta:+.2f}/s)"),
-                    score=abs(slope_delta) * 20.0,  # make comparable with step score
+                    evidence=(f"{name} slope change {left_slope:+.2f} -> {right_slope:+.2f} "
+                              f"(delta {slope_delta:+.2f}/s)"),
+                    score=abs(slope_delta) * 20.0,
                 ))
+    return out
+
+
+def _detect_inflections(
+    name: str,
+    xs: list[float],
+    ys_smooth: list[float],
+    window: int,
+    min_change: float,
+) -> list[ChangePoint]:
+    """Detect 'rising-then-flat' / 'falling-then-flat' inflection points.
+
+    Compares the cumulative change across the left window to that of the
+    right window. When the left moved strongly and the right is basically
+    flat (< 20% of left's motion), that is the regime boundary. This is
+    the classic fill-up-then-plateau pattern that slope thresholds miss
+    on very slow signals.
+    """
+    out: list[ChangePoint] = []
+    n = len(xs)
+    if n < 2 * window + 2:
+        return out
+    for i in range(window, n - window):
+        left_change = ys_smooth[i] - ys_smooth[i - window]
+        right_change = ys_smooth[i + window - 1] - ys_smooth[i]
+        if abs(left_change) < min_change:
+            continue
+        if abs(right_change) >= 0.25 * abs(left_change):
+            continue
+        direction = "rising" if left_change > 0 else "falling"
+        out.append(ChangePoint(
+            rel_seconds=xs[i],
+            reason=f"{name}_{direction}_to_flat",
+            kind="slope",
+            evidence=(f"{name} {direction} by {abs(left_change):.1f} points then flattened "
+                      f"(right window moved only {right_change:+.1f})"),
+            score=abs(left_change) * 2.0,
+        ))
     return out
 
 
@@ -125,7 +196,6 @@ def _detect_quiet_periods(
     active_threshold: float,
     quiet_threshold: float,
 ) -> list[ChangePoint]:
-    """Flag the point where activity drops below quiet_threshold after sustained above active_threshold."""
     out: list[ChangePoint] = []
     n = len(xs)
     if n < 2 * window + 2:
@@ -147,10 +217,16 @@ def _detect_quiet_periods(
 
 def _detect_process_ends(
     process_rows: list[dict[str, Any]],
-    min_active_seconds: float,
-    drop_threshold: float,
+    *,
+    drop_threshold: float = 10.0,
+    min_peak_cpu: float = 40.0,
+    min_active_seconds: float = 120.0,
+    max_results: int = 5,
 ) -> list[ChangePoint]:
-    """Find the moment where a previously top-CPU process goes quiet for good."""
+    """Only flag a process-end when the process was really significant:
+    peak CPU >= min_peak_cpu AND it spent min_active_seconds above
+    drop_threshold. Then we keep only the top max_results by score so a
+    13-hour desktop run doesn't emit dozens of these."""
     series: dict[int, dict[str, Any]] = {}
     for r in process_rows:
         pid = r.get("pid")
@@ -165,16 +241,25 @@ def _detect_process_ends(
             e["ys"].append(float(r.get("cpu_pct") or 0.0))
         except (TypeError, ValueError):
             e["ys"].append(0.0)
-    out: list[ChangePoint] = []
+
+    candidates: list[tuple[float, ChangePoint]] = []
     for pid, s in series.items():
         xs = s["xs"]
         ys = s["ys"]
         if len(xs) < 4:
             continue
-        # skip pid if total cpu contribution is trivial
-        if sum(ys) < 30.0:
+        peak = max(ys) if ys else 0.0
+        if peak < min_peak_cpu:
             continue
-        # find the last sample above drop_threshold; if the run continued >= min_active after that, emit end
+        # sum time above drop_threshold
+        if len(xs) >= 2:
+            dt = max(0.1, xs[1] - xs[0])
+        else:
+            dt = 1.0
+        active_seconds = sum(dt for v in ys if v >= drop_threshold)
+        if active_seconds < min_active_seconds:
+            continue
+        # find last index where cpu >= drop_threshold, then the end-rel
         last_active_idx = -1
         for i, v in enumerate(ys):
             if v >= drop_threshold:
@@ -183,17 +268,19 @@ def _detect_process_ends(
             continue
         end_rel = xs[last_active_idx]
         tail = xs[-1] - end_rel
-        peak = max(ys) if ys else 0.0
-        if tail >= min_active_seconds and peak >= drop_threshold + 5:
-            out.append(ChangePoint(
-                rel_seconds=end_rel,
-                reason="process_end",
-                kind="process_end",
-                evidence=(f"process {s['name']} (pid {pid}) dropped below "
-                          f"{drop_threshold:.0f}% CPU; peak was {peak:.1f}%"),
-                score=peak,
-            ))
-    return out
+        if tail < min_active_seconds:
+            continue
+        score = peak * (active_seconds / 60.0)
+        candidates.append((score, ChangePoint(
+            rel_seconds=end_rel,
+            reason="process_end",
+            kind="process_end",
+            evidence=(f"process {s['name']} (pid {pid}) ended: "
+                      f"peak {peak:.0f}%, active {active_seconds:.0f}s"),
+            score=score,
+        )))
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    return [cp for _, cp in candidates[:max_results]]
 
 
 def _dedupe(cps: list[ChangePoint], proximity_seconds: float) -> list[ChangePoint]:
@@ -201,7 +288,11 @@ def _dedupe(cps: list[ChangePoint], proximity_seconds: float) -> list[ChangePoin
     out: list[ChangePoint] = []
     for c in cps_sorted:
         if out and c.rel_seconds - out[-1].rel_seconds < proximity_seconds:
-            if c.score > out[-1].score:
+            # keep the stronger; prefer step/slope over process_end at a tie
+            kind_rank = {"step": 3, "slope": 2, "quiet": 2, "process_end": 1}
+            cur_score = c.score * 0.9 + kind_rank.get(c.kind, 0)
+            prev_score = out[-1].score * 0.9 + kind_rank.get(out[-1].kind, 0)
+            if cur_score > prev_score:
                 out[-1] = c
             continue
         out.append(c)
@@ -227,37 +318,32 @@ def build_phases(
         return []
     cps_sorted = sorted(change_points, key=lambda c: c.rel_seconds)
 
-    def _mk(boundaries: list[tuple[float, ChangePoint | None]]) -> list[Phase]:
-        phases: list[Phase] = []
-        for i in range(len(boundaries) - 1):
-            start, cp = boundaries[i]
-            end, _ = boundaries[i + 1]
-            dur = end - start
-            phases.append(Phase(
-                phase_id=i + 1,
-                start_rel=start,
-                end_rel=end,
-                duration_seconds=dur,
-                reason_at_start=(cp.reason if cp else None),
-                evidence_at_start=(cp.evidence if cp else None),
-            ))
-        return phases
-
     boundaries: list[tuple[float, ChangePoint | None]] = [(0.0, None)]
     for c in cps_sorted:
         boundaries.append((c.rel_seconds, c))
     boundaries.append((total_duration, None))
 
-    phases = _mk(boundaries)
+    phases: list[Phase] = []
+    for i in range(len(boundaries) - 1):
+        start, cp = boundaries[i]
+        end, _ = boundaries[i + 1]
+        dur = end - start
+        phases.append(Phase(
+            phase_id=i + 1,
+            start_rel=start,
+            end_rel=end,
+            duration_seconds=dur,
+            reason_at_start=(cp.reason if cp else None),
+            evidence_at_start=(cp.evidence if cp else None),
+        ))
 
-    # Merge short phases into the longer neighbour (absorb the boundary).
+    # Merge short phases into the longer neighbour
     changed = True
     while changed and len(phases) > 1:
         changed = False
         for i, p in enumerate(phases):
             if p.duration_seconds >= min_phase_seconds:
                 continue
-            # merge into longer neighbour
             left_dur = phases[i - 1].duration_seconds if i > 0 else -1
             right_dur = phases[i + 1].duration_seconds if i < len(phases) - 1 else -1
             if left_dur >= right_dur and i > 0:
@@ -285,7 +371,6 @@ def build_phases(
             changed = True
             break
 
-    # renumber
     for i, p in enumerate(phases):
         phases[i] = Phase(
             phase_id=i + 1,
@@ -298,35 +383,103 @@ def build_phases(
     return phases
 
 
+def auto_min_phase_seconds(total_duration: float) -> float:
+    """Default min-phase: ~5% of total, clipped to 60..3600 s."""
+    return max(60.0, min(3600.0, total_duration * 0.05))
+
+
 def detect_change_points(
     system_rows: list[dict[str, Any]],
     process_rows: list[dict[str, Any]],
     *,
-    window_seconds: float = 20.0,
-    step_threshold: float = 12.0,
-    slope_threshold: float = 0.8,
-    proximity_seconds: float = 30.0,
+    window_seconds: float | None = None,
+    step_threshold: float = 6.0,
+    slope_threshold: float = 0.6,
+    proximity_seconds: float | None = None,
 ) -> list[ChangePoint]:
-    xs, ys = _combined_intensity(system_rows)
+    series = _extract_series(system_rows)
+    xs = series["intensity"][0]
     if len(xs) < 4:
         return []
 
-    # estimate sample cadence
-    dt = xs[1] - xs[0] if len(xs) >= 2 else 1.0
-    if dt <= 0:
-        dt = 1.0
-    window = max(3, int(window_seconds / dt))
+    total = xs[-1] - xs[0] if len(xs) >= 2 else 0
+    if proximity_seconds is None:
+        # a change point must be at least ~2.5% of the run apart from the next
+        proximity_seconds = max(30.0, min(1800.0, total * 0.025))
 
-    ys_smooth = _ema(ys, alpha=0.3)
+    window, _dt = _auto_window_samples(xs, window_seconds)
+    if window <= 0:
+        return []
 
-    step_slope = _detect_step_and_slope(xs, ys_smooth, window, step_threshold, slope_threshold)
-    quiet = _detect_quiet_periods(xs, ys_smooth, window,
-                                  active_threshold=30.0, quiet_threshold=12.0)
-    pends = _detect_process_ends(process_rows,
-                                 min_active_seconds=max(30.0, 2 * dt),
-                                 drop_threshold=10.0)
-    merged = _dedupe(step_slope + quiet + pends, proximity_seconds)
+    # Larger window for inflection detection -- slow "fill then flat"
+    # patterns need roughly 5% of the run on each side to be visible.
+    inflection_window_s = max(60.0, min(3600.0, total * 0.05))
+    inflection_window = max(window, int(inflection_window_s / _dt))
+
+    out: list[ChangePoint] = []
+    # Per-metric step/slope detection on a short window (captures abrupt moves).
+    for name, (mxs, mys) in series.items():
+        smooth = _ema(mys, alpha=0.3)
+        out.extend(_detect_step_per_metric(name, mxs, smooth, window,
+                                           step_threshold, slope_threshold))
+
+    # Per-metric inflection on a longer window (captures "rising then flat").
+    for name, (mxs, mys) in series.items():
+        smooth = _ema(mys, alpha=0.3)
+        out.extend(_detect_inflections(name, mxs, smooth, inflection_window,
+                                       min_change=max(step_threshold, 5.0)))
+
+    # Quiet periods on combined intensity only (CPU alone is too jittery).
+    intensity_smooth = _ema(series["intensity"][1], alpha=0.3)
+    out.extend(_detect_quiet_periods(xs, intensity_smooth, window,
+                                     active_threshold=30.0, quiet_threshold=10.0))
+
+    # Process ends: strict + top-5 only, AND must have moved the system.
+    pends = _detect_process_ends(process_rows)
+    pends = _filter_process_ends_by_system_impact(
+        pends, xs, intensity_smooth, window, step_threshold,
+    )
+    out.extend(pends)
+
+    merged = _dedupe(out, proximity_seconds)
     return merged
+
+
+def _filter_process_ends_by_system_impact(
+    process_ends: list[ChangePoint],
+    xs: list[float],
+    intensity_smooth: list[float],
+    window: int,
+    step_threshold: float,
+) -> list[ChangePoint]:
+    """Keep only process_end candidates where the SYSTEM intensity also
+    dropped around the same time. A huge process ending is irrelevant to
+    phase detection if the host had other equally-busy processes keeping
+    the overall signal flat."""
+    if not process_ends or len(xs) < 2 * window + 2:
+        return []
+    kept: list[ChangePoint] = []
+    # tolerance window around the process-end time
+    tol = max(30.0, 0.5 * window * (xs[-1] - xs[0]) / max(len(xs) - 1, 1))
+    for cp in process_ends:
+        # find the nearest system-sample index
+        target = cp.rel_seconds
+        idx = min(range(len(xs)), key=lambda i: abs(xs[i] - target))
+        if idx < window or idx >= len(xs) - window:
+            continue
+        left_mean = sum(intensity_smooth[idx - window:idx]) / window
+        right_mean = sum(intensity_smooth[idx:idx + window]) / window
+        if abs(right_mean - left_mean) >= step_threshold * 0.8:
+            cp_updated = ChangePoint(
+                rel_seconds=cp.rel_seconds,
+                reason=cp.reason,
+                kind=cp.kind,
+                evidence=(cp.evidence
+                          + f"; system intensity {left_mean:.1f} -> {right_mean:.1f}"),
+                score=cp.score,
+            )
+            kept.append(cp_updated)
+    return kept
 
 
 def change_point_to_dict(c: ChangePoint) -> dict[str, Any]:

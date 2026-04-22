@@ -1,4 +1,5 @@
 -r requirements.txt
 
-# Used only by build_exe.bat to package a single-file USB executable.
+# Build-only tooling -- not needed at runtime.
 pyinstaller>=6.11
+Pillow>=10.4   # used by tools/make_icon.py to convert assets/icon.png -> assets/icon.ico

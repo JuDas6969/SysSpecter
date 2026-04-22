@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import tkinter as tk
 from tkinter import ttk
+from typing import Optional
 
 from ..config import DEFAULT_OUTPUT_ROOT
 from .tab_compare import CompareTab
@@ -12,39 +15,80 @@ from .tab_runs import RunsTab
 
 
 _ABOUT_TEXT = (
-    "SysSpecter — See everything. Find the cause.\n\n"
-    "This GUI is a thin wrapper around the same commands you can run from the "
-    "terminal:\n\n"
-    "  • Monitor — captures system + process timelines for a session\n"
-    "  • Runs — browse finished runs; rebuild, trim, split into phases\n"
-    "  • Compare — select 2+ runs; auto-detects before/after / pair / fleet mode\n\n"
+    "SysSpecter — See everything. Find the cause.\n"
+    "Windows performance diagnostic + comparative benchmark framework.\n\n"
+    "Tabs\n"
+    "  • Monitor  — captures system + process timelines for a session\n"
+    "  • Runs     — browse finished runs; rebuild, trim, split into phases\n"
+    "  • Compare  — select 2+ runs; auto-detects before/after / pair / fleet mode\n\n"
     "All reports and artifacts live under the output-root folder "
     f"(default: {DEFAULT_OUTPUT_ROOT}).\n\n"
     "Phase 3 collectors (GPU / event log / ETW disk) are opt-in on the Monitor tab. "
-    "ETW requires running as Administrator."
+    "ETW requires running as Administrator.\n\n"
+    "Hover any label or field for a short description of what it does.\n\n"
+    "© 2026 David Juriga. All rights reserved."
 )
+
+
+def _assets_dir() -> Optional[str]:
+    """Locate the assets/ folder next to the script or bundled EXE."""
+    # Running as a PyInstaller frozen exe: _MEIPASS holds the temp extract dir
+    meipass = getattr(sys, "_MEIPASS", None)
+    candidates: list[str] = []
+    if meipass:
+        candidates.append(os.path.join(meipass, "assets"))
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo = os.path.abspath(os.path.join(here, "..", ".."))
+    candidates.append(os.path.join(repo, "assets"))
+    try:
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        candidates.append(os.path.join(exe_dir, "assets"))
+    except Exception:
+        pass
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return None
+
+
+def _load_photo(path: str, max_height: int) -> Optional[tk.PhotoImage]:
+    """Load a PNG via Tk's PhotoImage and downsample until its height fits."""
+    if not os.path.exists(path):
+        return None
+    try:
+        img = tk.PhotoImage(file=path)
+    except tk.TclError:
+        return None
+    h = img.height()
+    if h > max_height and max_height > 0:
+        factor = max(1, h // max_height)
+        img = img.subsample(factor, factor)
+    return img
 
 
 class App:
     def __init__(self, output_root: str = DEFAULT_OUTPUT_ROOT) -> None:
         self.root = tk.Tk()
         self.root.title("SysSpecter")
-        self.root.geometry("1100x720")
-        self.root.minsize(900, 600)
+        self.root.geometry("1180x780")
+        self.root.minsize(960, 640)
 
         try:
-            ttk.Style().theme_use("vista" if self.root.tk.call("tk", "windowingsystem") == "win32" else "clam")
+            ttk.Style().theme_use(
+                "vista" if self.root.tk.call("tk", "windowingsystem") == "win32" else "clam"
+            )
         except tk.TclError:
             pass
 
         self._output_root = output_root
+        self._assets = _assets_dir()
+        self._images: list[tk.PhotoImage] = []  # keep refs alive
+
+        self._apply_window_icon()
 
         header = ttk.Frame(self.root, padding=(12, 8))
         header.pack(fill="x")
-        ttk.Label(header, text="SysSpecter",
-                  font=("Segoe UI", 14, "bold")).pack(side="left")
-        ttk.Label(header, text="See everything. Find the cause.",
-                  foreground="#6b7a99").pack(side="left", padx=12)
+        self._apply_header_logo(header)
 
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -68,19 +112,64 @@ class App:
 
         about = ttk.Frame(self.notebook, padding=16)
         self.notebook.add(about, text="About")
-        # ttk.Frame has no -background option; let Text use its default (white)
-        # or pull the themed backdrop if available.
+        self._build_about_tab(about)
+
+        footer = ttk.Frame(self.root, padding=(12, 4))
+        footer.pack(fill="x", side="bottom")
+        ttk.Label(
+            footer,
+            text="© 2026 David Juriga — SysSpecter",
+            foreground="#6b7a99", font=("Segoe UI", 8),
+        ).pack(side="right")
+
+    # --------------------------------------------------------------- chrome
+    def _apply_window_icon(self) -> None:
+        if not self._assets:
+            return
+        for name in ("icon.png", "logo.png"):
+            img = _load_photo(os.path.join(self._assets, name), max_height=64)
+            if img is not None:
+                try:
+                    self.root.iconphoto(True, img)
+                    self._images.append(img)
+                    return
+                except tk.TclError:
+                    continue
+
+    def _apply_header_logo(self, header: ttk.Frame) -> None:
+        wordmark_img: Optional[tk.PhotoImage] = None
+        if self._assets:
+            wordmark_img = _load_photo(
+                os.path.join(self._assets, "logo_long.png"), max_height=48,
+            )
+        if wordmark_img is not None:
+            self._images.append(wordmark_img)
+            ttk.Label(header, image=wordmark_img).pack(side="left")
+        else:
+            ttk.Label(header, text="SysSpecter",
+                      font=("Segoe UI", 14, "bold")).pack(side="left")
+            ttk.Label(header, text="See everything. Find the cause.",
+                      foreground="#6b7a99").pack(side="left", padx=12)
+
+    def _build_about_tab(self, parent: ttk.Frame) -> None:
+        big_logo: Optional[tk.PhotoImage] = None
+        if self._assets:
+            big_logo = _load_photo(os.path.join(self._assets, "logo.png"), max_height=220)
+        if big_logo is not None:
+            self._images.append(big_logo)
+            ttk.Label(parent, image=big_logo).pack(pady=(0, 8))
+
         try:
             bg = ttk.Style().lookup("TFrame", "background") or "#f0f0f0"
         except tk.TclError:
             bg = "#f0f0f0"
-        lbl = tk.Text(about, wrap="word", height=14, relief="flat", background=bg)
-        lbl.insert("1.0", _ABOUT_TEXT)
-        lbl.configure(state="disabled")
-        lbl.pack(fill="both", expand=True)
+        txt = tk.Text(parent, wrap="word", height=14, relief="flat", background=bg)
+        txt.insert("1.0", _ABOUT_TEXT)
+        txt.configure(state="disabled")
+        txt.pack(fill="both", expand=True)
 
+    # --------------------------------------------------------------- runtime
     def _on_run_finished(self) -> None:
-        # Refresh the runs list so newly-completed runs show up.
         try:
             self.runs_tab.refresh()
             self.compare_tab.refresh()
