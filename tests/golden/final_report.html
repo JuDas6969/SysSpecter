@@ -114,6 +114,25 @@ details { margin-top: 10px; }
 @media (max-width: 880px) { .grid-2 { grid-template-columns: 1fr; } }
 .footer { color: #999; font-size: 12px; margin: 40px 0 20px; text-align: center; }
 code { background: #f3f5fa; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+
+/* --- Print / &#34;Save as PDF&#34; via browser (Ctrl+P) -------------------- */
+@media print {
+  body { background: #fff; }
+  .wrapper { max-width: none; padding: 8mm 8mm; }
+  .card { page-break-inside: avoid; box-shadow: none; border-color: #ccc; }
+  h1, h2, h3 { page-break-after: avoid; }
+  table { page-break-inside: auto; }
+  tr { page-break-inside: avoid; }
+  details[open] &gt; summary { page-break-after: avoid; }
+  /* Keep the brand colors in the PDF */
+  h1 { color: #a855f7 !important; background: none !important;
+       -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .brand-bar, .banner-warn, .banner-info, .score.good .val,
+  .score.med .val, .score.bad .val {
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  .footer { color: #666; }
+}
 </style>
 </head><body>
 <div class="wrapper">

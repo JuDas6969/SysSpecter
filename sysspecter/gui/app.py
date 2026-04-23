@@ -146,6 +146,43 @@ class App:
 
         self._install_shortcuts()
 
+        # First-run onboarding dialog. Scheduled after a brief delay so
+        # the main window is already visible when it pops up.
+        if not self._prefs.first_run_completed:
+            self.root.after(250, self._show_onboarding)
+
+    def _show_onboarding(self) -> None:
+        from ..settings import save_prefs
+        from .onboarding import OnboardingDialog
+
+        def _choice(tab: str) -> None:
+            mapping = {
+                "monitor": self.monitor_tab,
+                "runs": self.runs_tab,
+                "compare": self.compare_tab,
+                "history": self.history_tab,
+            }
+            target = mapping.get(tab)
+            if target is not None:
+                try:
+                    self.notebook.select(target)
+                except tk.TclError:
+                    pass
+
+        def _done() -> None:
+            # Mark first-run completed so the dialog does not come back.
+            from dataclasses import replace
+            self._prefs = replace(self._prefs, first_run_completed=True)
+            try:
+                save_prefs(self._prefs)
+            except Exception:
+                pass
+
+        try:
+            OnboardingDialog(self.root, on_choice=_choice, on_dismiss=_done)
+        except tk.TclError:
+            pass
+
     def _install_shortcuts(self) -> None:
         def _refresh(_event=None) -> None:
             tab = self._current_tab_widget()

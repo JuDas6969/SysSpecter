@@ -46,6 +46,19 @@ echo  Cleaning previous build artifacts...
 if exist "%HERE%build"  rmdir /S /Q "%HERE%build"
 if exist "%HERE%dist"   rmdir /S /Q "%HERE%dist"
 
+REM Reproducible-ish build: if SOURCE_DATE_EPOCH is unset, pin it to the
+REM tree's last-commit time. PyInstaller's bootloader still writes its own
+REM timestamp, but the base_library.zip + hooked tools honour the envvar
+REM so byte-stability of those components is restored.
+if not defined SOURCE_DATE_EPOCH (
+  for /f "tokens=*" %%i in ('git -C "%HERE%" log -1 --format=%%ct 2^>NUL') do (
+    set "SOURCE_DATE_EPOCH=%%i"
+  )
+)
+if defined SOURCE_DATE_EPOCH (
+  echo  SOURCE_DATE_EPOCH=%SOURCE_DATE_EPOCH%
+)
+
 echo  Running PyInstaller...
 "%PY%" -m PyInstaller "%HERE%sysspecter.spec" --clean --noconfirm
 if errorlevel 1 (

@@ -43,7 +43,7 @@ class CompareTab(ttk.Frame):
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=2)
-        self.rowconfigure(3, weight=1)
+        self.rowconfigure(4, weight=1)
 
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -81,10 +81,18 @@ class CompareTab(ttk.Frame):
                                    state="disabled")
         self.open_btn.grid(row=0, column=3, padx=(0, 6))
         tooltip(self.open_btn, _TT_OPEN)
+        self.cancel_btn = ttk.Button(actions, text="Cancel", command=self._cancel,
+                                     state="disabled")
+        self.cancel_btn.grid(row=0, column=4, padx=(0, 6))
+        tooltip(self.cancel_btn, "Abort the running comparison.")
+
+        # Progress bar — indeterminate while the child runs.
+        self.progress = ttk.Progressbar(self, mode="indeterminate")
+        self.progress.grid(row=3, column=0, sticky="ew", pady=(0, 4))
 
         ttk.Label(self, text="Comparer output:").grid(row=2, column=0, sticky="sw")
         self.log = LogPane(self)
-        self.log.grid(row=3, column=0, sticky="nsew")
+        self.log.grid(row=4, column=0, sticky="nsew")
 
     def refresh(self) -> None:
         try:
@@ -120,9 +128,37 @@ class CompareTab(ttk.Frame):
             return
         self._latest_output_dir = None
         self.open_btn.configure(state="disabled")
+        self.cancel_btn.configure(state="normal")
+        try:
+            self.progress.configure(mode="indeterminate")
+            self.progress.start(80)
+        except Exception:
+            pass
         self.log.poll_runner(self._runner, on_exit=self._on_exit)
 
+    def _cancel(self) -> None:
+        if self._runner and self._runner.is_running():
+            try:
+                self._runner.send_ctrl_break()
+            except Exception:
+                pass
+            # give it a moment, then hard-kill
+            self.after(2000, self._force_kill)
+
+    def _force_kill(self) -> None:
+        if self._runner and self._runner.is_running():
+            try:
+                self._runner.kill()
+            except Exception:
+                pass
+
     def _on_exit(self, rc: int) -> None:
+        try:
+            self.progress.stop()
+            self.progress.configure(value=0)
+        except Exception:
+            pass
+        self.cancel_btn.configure(state="disabled")
         if rc == 0:
             root = self._get_output_root()
             cmp_root = os.path.join(root, "Comparisons")

@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.1.0)"
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write    # needed to attach assets to the GitHub Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-release-${{ hashFiles('requirements*.txt') }}
+
+      - name: Create venv + install pinned deps
+        shell: pwsh
+        run: |
+          py -3.12 -m venv .venv
+          .venv\Scripts\python.exe -m pip install --upgrade pip
+          .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+
+      - name: Tests (gate the release)
+        shell: pwsh
+        run: |
+          .venv\Scripts\python.exe -m pytest -q
+
+      - name: Reproducible timestamp for PyInstaller
+        shell: pwsh
+        run: |
+          echo "SOURCE_DATE_EPOCH=$([int][double]::Parse((Get-Date -Date ((git log -1 --format=%cI) | Get-Date).ToUniversalTime() -UFormat %s))" >> $env:GITHUB_ENV
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          .\build_exe.bat
+
+      - name: Smoke-test the EXE
+        shell: pwsh
+        run: |
+          .\dist\SysSpecter.exe --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "SysSpecter.exe --help failed" }
+
+      # Placeholder for code-signing. Real cert / secret wiring happens
+      # once the EV cert has been provisioned — see BUILDING.md.
+      # - name: Code-sign (OV/EV)
+      #   if: env.SIGNING_CERT_BASE64 != ''
+      #   shell: pwsh
+      #   run: |
+      #     $cert = [Convert]::FromBase64String($env:SIGNING_CERT_BASE64)
+      #     [System.IO.File]::WriteAllBytes("codesign.pfx", $cert)
+      #     signtool sign /f codesign.pfx /p "$env:SIGNING_CERT_PASSWORD" `
+      #       /tr http://timestamp.sectigo.com /td sha256 /fd sha256 `
+      #       /a dist\SysSpecter.exe
+
+      - name: Compute SHA-256 for the EXE
+        shell: pwsh
+        run: |
+          certutil -hashfile dist\SysSpecter.exe SHA256 > dist\SysSpecter.exe.sha256
+          Get-Content dist\SysSpecter.exe.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          draft: false
+          prerelease: ${{ contains(steps.ver.outputs.tag, '-rc') || contains(steps.ver.outputs.tag, '-beta') || contains(steps.ver.outputs.tag, '-alpha') }}
+          body: |
+            Built from commit `${{ github.sha }}`.
+
+            See `CHANGELOG.md` for the full list of changes.
+
+            Verify the EXE against `SysSpecter.exe.sha256` before running.
+          files: |
+            dist/SysSpecter.exe
+            dist/SysSpecter.exe.sha256
+            dist/SysSpecter.sbom.json
+            dist/LICENSE.txt
+            dist/THIRD_PARTY_NOTICES.md
+            CHANGELOG.md

@@ -56,6 +56,10 @@ class UserPrefs:
     show_admin_banner: bool = True
     check_updates_on_start: bool = True
 
+    # True once the onboarding dialog has been dismissed. Delete
+    # config.toml to see the onboarding again.
+    first_run_completed: bool = False
+
 
 # ---------------------------------------------------------------- storage path
 
