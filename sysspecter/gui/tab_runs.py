@@ -55,9 +55,16 @@ class RunsTab(ttk.Frame):
         self.refresh()
 
     def _build_ui(self) -> None:
+        # Layout (each widget in its OWN row so nothing overlaps):
+        #   row 0  top bar (Output root + Refresh)
+        #   row 1  filter bar
+        #   row 2  runs table           <- stretches (weight=2)
+        #   row 3  action buttons
+        #   row 4  "Command output:" label
+        #   row 5  log pane              <- stretches (weight=1)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=2)
-        self.rowconfigure(4, weight=1)
+        self.rowconfigure(5, weight=1)
 
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -113,9 +120,10 @@ class RunsTab(ttk.Frame):
             btn.grid(row=0, column=col, padx=(0, 6))
             tooltip(btn, tip)
 
-        ttk.Label(self, text="Command output:").grid(row=3, column=0, sticky="sw", pady=(0, 0))
+        ttk.Label(self, text="Command output:").grid(row=4, column=0, sticky="w",
+                                                     pady=(0, 2))
         self.log = LogPane(self)
-        self.log.grid(row=4, column=0, sticky="nsew")
+        self.log.grid(row=5, column=0, sticky="nsew")
 
     # ------------------------------------------------------------------ helpers
     def refresh(self) -> None:

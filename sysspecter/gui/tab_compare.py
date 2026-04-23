@@ -41,12 +41,20 @@ class CompareTab(ttk.Frame):
         self.refresh()
 
     def _build_ui(self) -> None:
+        # Layout (each widget in its OWN row so nothing overlaps):
+        #   row 0  top bar (Output root + Refresh)
+        #   row 1  help label
+        #   row 2  runs table           <- stretches (weight=2)
+        #   row 3  action buttons
+        #   row 4  progress bar
+        #   row 5  "Comparer output:" label
+        #   row 6  log pane              <- stretches (weight=1)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=2)
-        self.rowconfigure(4, weight=1)
+        self.rowconfigure(2, weight=2)
+        self.rowconfigure(6, weight=1)
 
         top = ttk.Frame(self)
-        top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         top.columnconfigure(1, weight=1)
         lbl = ttk.Label(top, text="Output root:")
         lbl.grid(row=0, column=0, sticky="w")
@@ -61,13 +69,13 @@ class CompareTab(ttk.Frame):
         help_lbl = ttk.Label(self, foreground="#555",
                              text="Select 2+ runs (Ctrl/Shift-click), then 'Start compare'. "
                                   "Mode is auto-detected from hostnames.")
-        help_lbl.grid(row=0, column=0, sticky="w", pady=(26, 0))
+        help_lbl.grid(row=1, column=0, sticky="w", pady=(0, 6))
 
         self.table = RunsTable(self, selectmode="extended")
-        self.table.grid(row=1, column=0, sticky="nsew")
+        self.table.grid(row=2, column=0, sticky="nsew")
 
         actions = ttk.Frame(self)
-        actions.grid(row=2, column=0, sticky="ew", pady=(8, 8))
+        actions.grid(row=3, column=0, sticky="ew", pady=(8, 8))
         sel_all = ttk.Button(actions, text="Select all", command=self._select_all)
         sel_all.grid(row=0, column=0, padx=(0, 6))
         tooltip(sel_all, _TT_SELECT_ALL)
@@ -88,11 +96,12 @@ class CompareTab(ttk.Frame):
 
         # Progress bar — indeterminate while the child runs.
         self.progress = ttk.Progressbar(self, mode="indeterminate")
-        self.progress.grid(row=3, column=0, sticky="ew", pady=(0, 4))
+        self.progress.grid(row=4, column=0, sticky="ew", pady=(0, 6))
 
-        ttk.Label(self, text="Comparer output:").grid(row=2, column=0, sticky="sw")
+        ttk.Label(self, text="Comparer output:").grid(row=5, column=0, sticky="w",
+                                                      pady=(0, 2))
         self.log = LogPane(self)
-        self.log.grid(row=4, column=0, sticky="nsew")
+        self.log.grid(row=6, column=0, sticky="nsew")
 
     def refresh(self) -> None:
         try:
