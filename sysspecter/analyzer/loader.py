@@ -13,7 +13,7 @@ def _read_csv(path: str) -> list[dict[str, Any]]:
     if not os.path.exists(path):
         return []
     rows: list[dict[str, Any]] = []
-    with open(path, "r", encoding="utf-8", newline="") as f:
+    with open(path, encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             rows.append(row)
@@ -187,7 +187,7 @@ def load_run(
         path = os.path.join(run_dir, name)
         if not os.path.exists(path):
             return default
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
 
     def _clip(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

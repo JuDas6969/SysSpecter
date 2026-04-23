@@ -6,8 +6,8 @@ import ctypes
 import os
 import re
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import filedialog, messagebox, ttk
-from typing import Callable
 
 from .duration import DurationParseError, format_duration, parse_duration
 from .runner import SubprocessRunner

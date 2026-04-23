@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import re
 
-
 _UNIT_SECONDS = {
     # seconds
     "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1,

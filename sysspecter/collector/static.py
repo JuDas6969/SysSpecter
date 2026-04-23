@@ -12,7 +12,7 @@ from typing import Any
 
 import psutil
 
-from ..winutil import run_ps_json, run_cmd
+from ..winutil import run_cmd, run_ps_json
 
 
 def _wmi_query(query: str, props: list[str], logger: logging.Logger | None) -> list[dict[str, Any]]:

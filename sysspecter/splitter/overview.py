@@ -9,7 +9,6 @@ from typing import Any
 from ..reporter.svg_charts import line_chart
 from .detect import ChangePoint, Phase
 
-
 _CSS = """
 body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; background: #f7f7f9; color: #222; }
 .wrapper { max-width: 1200px; margin: 0 auto; padding: 16px 24px; }
@@ -106,7 +105,8 @@ def build_overview_report(
     cpu_y = [float(r.get("cpu_total_pct") or 0.0) for r in system_rows]
     mem_y = [float(r.get("mem_percent") or 0.0) for r in system_rows]
     disk_y = [float(r.get("disk_active_pct_est") or 0.0) for r in system_rows]
-    intensity = [0.5*c + 0.3*m + 0.2*d for c, m, d in zip(cpu_y, mem_y, disk_y)]
+    intensity = [0.5*c + 0.3*m + 0.2*d
+                 for c, m, d in zip(cpu_y, mem_y, disk_y, strict=False)]
 
     chart = line_chart(
         [

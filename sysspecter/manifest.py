@@ -67,7 +67,7 @@ def update_manifest_end(
     stop_reason: str,
     actual_duration: float,
 ) -> None:
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         data = json.load(f)
     data["ended_at"] = ended_at.isoformat(timespec="seconds")
     data["stop_reason"] = stop_reason
@@ -90,7 +90,7 @@ def mark_degraded(manifest_path: str, collector: str, reason: str) -> None:
     can surface a 'measurement degraded' banner. Safe to call before or
     after the run ends."""
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return
@@ -106,7 +106,7 @@ def mark_degraded(manifest_path: str, collector: str, reason: str) -> None:
 
 
 def load_manifest(manifest_path: str) -> dict[str, Any]:
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -115,7 +115,7 @@ def _last_rel_seconds_in_csv(csv_path: str) -> float | None:
         return None
     last: float | None = None
     try:
-        with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        with open(csv_path, encoding="utf-8", newline="") as f:
             reader = _csv.DictReader(f)
             for row in reader:
                 v = row.get("rel_seconds")
@@ -140,7 +140,7 @@ def repair_manifest_if_aborted(run_dir: str) -> bool:
     manifest_path = os.path.join(run_dir, "manifest.json")
     if not os.path.exists(manifest_path):
         return False
-    with open(manifest_path, "r", encoding="utf-8") as f:
+    with open(manifest_path, encoding="utf-8") as f:
         data = json.load(f)
     if data.get("ended_at"):
         return False

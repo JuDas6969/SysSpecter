@@ -15,5 +15,5 @@ def atomic_write_json(path: str, data: Any) -> None:
 
 
 def load_json(path: str) -> Any:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)

@@ -7,14 +7,13 @@ import shutil
 import subprocess
 import tkinter as tk
 import zipfile
+from collections.abc import Callable
 from tkinter import messagebox, simpledialog, ttk
-from typing import Callable
 
 from .runner import SubprocessRunner
 from .runs import scan_runs
 from .tooltip import attach as tooltip
 from .widgets import LogPane, RunsTable
-
 
 _TT = {
     "output_root": ("Folder that contains the Runs/ subdirectory. Defaults to "

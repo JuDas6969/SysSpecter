@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import psutil
-
 from .static import collect_service_snapshot
 
 

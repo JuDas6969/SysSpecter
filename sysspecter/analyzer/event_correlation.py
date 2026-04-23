@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 _PROVIDER_BUCKETS: dict[str, str] = {
     "Microsoft-Windows-Kernel-Power": "power",
     "Microsoft-Windows-Power-Troubleshooter": "power",

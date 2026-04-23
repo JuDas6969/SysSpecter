@@ -63,3 +63,42 @@ sysspecter = ["py.typed"]
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["build", "dist", ".venv", "assets", "tools"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "W",    # pycodestyle warnings
+    "UP",   # pyupgrade
+    "B",    # bugbear
+]
+ignore = [
+    "E501",  # line length — the formatter handles this, not the linter
+    "B008",  # function calls in arg defaults are fine here
+    "B904",  # raise-from — already OK
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+"sysspecter/reporter/html_report.py" = ["E402"]  # large template literal
+
+[tool.coverage.run]
+branch = true
+source = ["sysspecter"]
+omit = ["sysspecter/gui/*", "sysspecter/cli.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

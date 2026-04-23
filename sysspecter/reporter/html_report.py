@@ -6,16 +6,15 @@ import html
 import os
 from typing import Any
 
-from jinja2 import Environment, BaseLoader, select_autoescape
+from jinja2 import BaseLoader, Environment, select_autoescape
 
 from ..analyzer.loader import load_run
 from ..analyzer.pipeline import analyze_run
 from ..logging_setup import get_logger
 from ..manifest import repair_manifest_if_aborted
-from .json_export import atomic_write_json, load_json
+from .json_export import load_json
 from .markdown_report import generate_markdown_summary
 from .svg_charts import heatmap, line_chart, stacked_area_chart
-
 
 _CSS = """
 body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
@@ -986,7 +985,7 @@ def build_report(
     windowed = min_rel_seconds is not None or max_rel_seconds is not None
     if windowed or not (os.path.exists(findings_path) and os.path.exists(scores_path)):
         logger.info("running analyzer%s",
-                    f" (window)" if windowed else "")
+                    " (window)" if windowed else "")
         analyze_run(run_dir, max_rel_seconds=max_rel_seconds,
                     min_rel_seconds=min_rel_seconds, output_dir=out_dir)
 

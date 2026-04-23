@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..config import Thresholds
-from .stats import sustained_windows, merge_windows, percentile, mean, max_opt
+from .stats import max_opt, mean, merge_windows, percentile, sustained_windows
 
 
 def detect_cpu_anomalies(

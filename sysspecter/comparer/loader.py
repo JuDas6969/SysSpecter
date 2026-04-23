@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any
 
-from ..analyzer.loader import load_run, RunData
+from ..analyzer.loader import RunData, load_run
 from ..analyzer.pipeline import analyze_run
 
 
@@ -15,9 +15,9 @@ def load_run_full(run_dir: str) -> tuple[RunData, dict[str, Any], dict[str, Any]
     scores_path = os.path.join(run_dir, "scores.json")
     if not (os.path.exists(findings_path) and os.path.exists(scores_path)):
         analyze_run(run_dir)
-    with open(findings_path, "r", encoding="utf-8") as f:
+    with open(findings_path, encoding="utf-8") as f:
         findings = json.load(f)
-    with open(scores_path, "r", encoding="utf-8") as f:
+    with open(scores_path, encoding="utf-8") as f:
         scores = json.load(f)
     return load_run(run_dir), findings, scores
 

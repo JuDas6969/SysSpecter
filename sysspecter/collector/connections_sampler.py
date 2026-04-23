@@ -12,11 +12,21 @@ internet" questions."""
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
 
 import psutil
+
+from ..safe_collect import safe_collect
+
+_log = logging.getLogger(__name__)
+
+
+@safe_collect("connections_sampler.read", fallback=None)
+def _read_connections(kind: str) -> list[Any] | None:
+    return psutil.net_connections(kind=kind)
 
 
 @dataclass
@@ -67,11 +77,8 @@ def collect_connection_snapshot(started_mono: float) -> list[ConnectionSample]:
 
     out: list[ConnectionSample] = []
     for kind, label in (("tcp", "tcp"), ("udp", "udp")):
-        try:
-            conns = psutil.net_connections(kind=kind)
-        except (psutil.AccessDenied, PermissionError):
-            continue
-        except Exception:
+        conns = _read_connections(kind)
+        if conns is None:
             continue
         pids = {c.pid for c in conns if c.pid}
         names = _resolve_names(pids)

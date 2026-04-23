@@ -23,8 +23,6 @@ def _explain_differences(runs: list[dict[str, Any]], matrix: dict[str, Any]) -> 
     if len(rows) < 2:
         return findings
 
-    rows_by_id = {r["run_id"]: r for r in rows}
-
     def _safe_delta(a: float | None, b: float | None) -> float | None:
         if a is None or b is None:
             return None

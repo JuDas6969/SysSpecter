@@ -20,7 +20,7 @@ def _write_timeline(run_dir: str, rel_seconds_last: float) -> None:
     path = os.path.join(run_dir, "timeline_system.csv")
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write("timestamp,rel_seconds,cpu_total_pct\n")
-        f.write(f"1.0,0.5,5.0\n")
+        f.write("1.0,0.5,5.0\n")
         f.write(f"2.0,{rel_seconds_last},10.0\n")
 
 

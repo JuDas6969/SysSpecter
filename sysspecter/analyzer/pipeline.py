@@ -10,14 +10,14 @@ from ..logging_setup import get_logger
 from ..reporter.json_export import atomic_write_json
 from .anomalies import detect_anomalies
 from .bottlenecks import classify_bottlenecks
-from .grouping import rank_apps
-from .leaks import detect_leak_patterns
-from .network_attribution import attribute_connections
-from .latency_analysis import analyze_latency
-from .gpu_analysis import analyze_gpu
 from .event_correlation import correlate_events
+from .gpu_analysis import analyze_gpu
+from .grouping import rank_apps
+from .latency_analysis import analyze_latency
+from .leaks import detect_leak_patterns
 from .loader import load_run
-from .offenders import rank_offenders, process_churn_stats
+from .network_attribution import attribute_connections
+from .offenders import process_churn_stats, rank_offenders
 from .scores import calculate_scores
 from .slowdowns import detect_slowdown_windows
 

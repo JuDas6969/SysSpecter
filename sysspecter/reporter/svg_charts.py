@@ -6,7 +6,6 @@ self-contained SVG string suitable for embedding directly in HTML."""
 from __future__ import annotations
 
 import html
-from typing import Iterable
 
 
 def _scale(v: float, vmin: float, vmax: float, out_lo: float, out_hi: float) -> float:
@@ -103,7 +102,7 @@ def line_chart(
         if not xs:
             continue
         pts: list[str] = []
-        for xv, yv in zip(xs, ys):
+        for xv, yv in zip(xs, ys, strict=False):
             px = _scale(xv, xmin, xmax, pad_l, pad_l + plot_w)
             py = _scale(yv, y_min, y_max, pad_t + plot_h, pad_t)
             pts.append(f"{px:.1f},{py:.1f}")

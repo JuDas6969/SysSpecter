@@ -141,7 +141,7 @@ def detect_slowdown_windows(
         if peak_disk >= th.disk_active_pct:
             description_bits.append(f"disk active at {peak_disk:.1f}%")
         if latency_hits:
-            lat_peak = max((l.get("avg_ms") or 0.0) for l in latency_hits)
+            lat_peak = max((lr.get("avg_ms") or 0.0) for lr in latency_hits)
             description_bits.append(f"network latency up to {lat_peak:.0f}ms")
         suspects_names = [
             o["name"] for o in offenders.get("top_cpu", [])[:2]

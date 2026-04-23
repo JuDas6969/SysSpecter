@@ -5,15 +5,13 @@ from __future__ import annotations
 import os
 import subprocess
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import messagebox, ttk
-from typing import Callable
 
-from ..paths import build_comparison_paths  # for displaying default root only
 from .runner import SubprocessRunner
 from .runs import scan_runs
 from .tooltip import attach as tooltip
 from .widgets import LogPane, RunsTable
-
 
 _TT_OUTPUT = ("Folder that contains Runs/. Comparison output lands in "
               "<this folder>/Comparisons/CMP_<timestamp>_<id>/.")

@@ -21,40 +21,68 @@ from typing import Any
 import psutil
 
 from ..config import (
-    Config, EXPENSIVE_COLLECTOR_INTERVAL, LATENCY_PROBE_INTERVAL,
+    EXPENSIVE_COLLECTOR_INTERVAL,
+    LATENCY_PROBE_INTERVAL,
+    Config,
 )
 from ..logging_setup import get_logger
-from ..manifest import build_run_manifest, mark_degraded, write_manifest, update_manifest_end
+from ..manifest import build_run_manifest, mark_degraded, update_manifest_end, write_manifest
 from ..paths import build_run_paths
 from ..reporter.csv_export import (
-    StreamingCSV, SYSTEM_FIELDS, PROCESS_FIELDS, NETWORK_FIELDS, LATENCY_FIELDS,
-    CONNECTIONS_FIELDS, GPU_ENGINE_FIELDS, GPU_PROCESS_FIELDS, GPU_ADAPTER_FIELDS,
+    CONNECTIONS_FIELDS,
+    GPU_ADAPTER_FIELDS,
+    GPU_ENGINE_FIELDS,
+    GPU_PROCESS_FIELDS,
+    LATENCY_FIELDS,
+    NETWORK_FIELDS,
+    PROCESS_FIELDS,
+    SYSTEM_FIELDS,
+    StreamingCSV,
 )
 from ..reporter.json_export import atomic_write_json
-from .static import (
-    collect_static_snapshot, collect_installed_programs, collect_autoruns,
-    collect_scheduled_tasks_summary, collect_process_tree_snapshot,
-    collect_service_snapshot,
-)
-from .system_sampler import collect_system_sample, sample_to_dict as system_sample_to_dict
-from .process_sampler import (
-    collect_process_sample, sample_to_csv_row, refresh_candidates,
-    maybe_refresh_candidates,
-)
-from .network_sampler import collect_network_sample, sample_to_dict as net_sample_to_dict
-from .latency_sampler import collect_latency_sample, sample_to_dict as lat_sample_to_dict
-from .service_sampler import refresh_and_diff_services
-from .process_diff import diff_process_snapshot
+from ..safe_collect import set_manifest_path
 from .connections_sampler import (
-    collect_connection_snapshot, sample_to_dict as conn_sample_to_dict,
+    collect_connection_snapshot,
+)
+from .connections_sampler import (
+    sample_to_dict as conn_sample_to_dict,
+)
+from .etw import EtwDiskSession
+from .eventlog import collect_event_log_for_window
+from .gpu_sampler import (
+    adapter_to_dict as gpu_adapter_to_dict,
 )
 from .gpu_sampler import (
-    collect_gpu_snapshot, engine_to_dict as gpu_engine_to_dict,
-    proc_to_dict as gpu_proc_to_dict, adapter_to_dict as gpu_adapter_to_dict,
+    collect_gpu_snapshot,
 )
-from .eventlog import collect_event_log_for_window
-from .etw import EtwDiskSession
-
+from .gpu_sampler import (
+    engine_to_dict as gpu_engine_to_dict,
+)
+from .gpu_sampler import (
+    proc_to_dict as gpu_proc_to_dict,
+)
+from .latency_sampler import collect_latency_sample
+from .latency_sampler import sample_to_dict as lat_sample_to_dict
+from .network_sampler import collect_network_sample
+from .network_sampler import sample_to_dict as net_sample_to_dict
+from .process_diff import diff_process_snapshot
+from .process_sampler import (
+    collect_process_sample,
+    maybe_refresh_candidates,
+    refresh_candidates,
+    sample_to_csv_row,
+)
+from .service_sampler import refresh_and_diff_services
+from .static import (
+    collect_autoruns,
+    collect_installed_programs,
+    collect_process_tree_snapshot,
+    collect_scheduled_tasks_summary,
+    collect_service_snapshot,
+    collect_static_snapshot,
+)
+from .system_sampler import collect_system_sample
+from .system_sampler import sample_to_dict as system_sample_to_dict
 
 _stop_requested = False
 
@@ -89,6 +117,8 @@ def run_monitor(config: Config) -> str:
 
     manifest = build_run_manifest(paths, config)
     write_manifest(paths.manifest, manifest)
+    # @safe_collect uses the manifest path to record collector failures.
+    set_manifest_path(paths.manifest)
 
     if manifest.get("privilege_level") != "admin":
         logger.warning(
@@ -341,6 +371,7 @@ def run_monitor(config: Config) -> str:
         logger.exception("reporter failed: %s", e)
 
     _print_done_banner(paths.run_dir, actual_duration, sample_count)
+    set_manifest_path(None)
     return paths.run_dir
 
 

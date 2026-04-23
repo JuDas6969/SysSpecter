@@ -120,7 +120,7 @@ def collect_event_log_for_window(
         except ValueError:
             return None
 
-    start_dt = _dt.datetime.fromtimestamp(start_wall, tz=_dt.timezone.utc)
+    start_dt = _dt.datetime.fromtimestamp(start_wall, tz=_dt.UTC)
     enriched: list[dict[str, Any]] = []
     for e in all_events:
         dt = _parse_iso(e["time"])
@@ -128,7 +128,7 @@ def collect_event_log_for_window(
         wall = None
         if dt is not None:
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_dt.timezone.utc)
+                dt = dt.replace(tzinfo=_dt.UTC)
             rel = round((dt - start_dt).total_seconds(), 1)
             wall = dt.timestamp()
         enriched.append({**e, "rel_seconds": rel, "timestamp": wall})

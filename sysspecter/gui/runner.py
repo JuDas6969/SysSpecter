@@ -13,9 +13,8 @@ import signal
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
-
 
 EXIT_MARKER = "__SYSSPECTER_GUI_EXIT__"
 
@@ -55,7 +54,7 @@ class SubprocessRunner:
         self.env = env or dict(os.environ)
         self.env.setdefault("PYTHONIOENCODING", "utf-8")
         self.env.setdefault("PYTHONUTF8", "1")
-        self.output_queue: "queue.Queue[str]" = queue.Queue()
+        self.output_queue: queue.Queue[str] = queue.Queue()
         self.proc: subprocess.Popen | None = None
         self._thread: threading.Thread | None = None
         self._exit_code: int | None = None

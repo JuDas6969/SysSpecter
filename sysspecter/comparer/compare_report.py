@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from jinja2 import Environment, BaseLoader, select_autoescape
+from jinja2 import BaseLoader, Environment, select_autoescape
 
 from ..paths import ComparisonPaths
 from ..reporter.svg_charts import line_chart
@@ -500,10 +500,10 @@ def build_comparison_report(
         mem_chart=mem_chart,
         hw_profiles=hw_diff.get("profiles") or [],
         hw_divergent=set(hw_diff.get("divergent_fields") or []),
-        hw_fields=[{"key": k, "label": l} for k, l in _HW_FIELDS],
+        hw_fields=[{"key": key, "label": label} for key, label in _HW_FIELDS],
         cfg_profiles=cfg_diff.get("profiles") or [],
         cfg_divergent=set(cfg_diff.get("divergent_fields") or []),
-        cfg_fields=[{"key": k, "label": l} for k, l in _CFG_FIELDS],
+        cfg_fields=[{"key": key, "label": label} for key, label in _CFG_FIELDS],
         sw_pairwise=sw_diff.get("pairwise") or [],
         autoruns_pairwise=autoruns_diff.get("pairwise") or [],
         bottlenecks=bottlenecks,

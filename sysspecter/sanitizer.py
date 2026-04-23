@@ -21,7 +21,6 @@ import re
 import shutil
 from typing import Any
 
-
 _REDACTED = "[REDACTED]"
 
 
@@ -86,7 +85,7 @@ def _rewrite_json(path: str, replacements: dict[str, str],
     if not os.path.exists(path):
         return
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError):
         return
@@ -100,7 +99,7 @@ def _rewrite_csv(path: str, replacements: dict[str, str],
     if not os.path.exists(path):
         return
     try:
-        with open(path, "r", encoding="utf-8", newline="") as f:
+        with open(path, encoding="utf-8", newline="") as f:
             reader = csv.reader(f)
             rows = list(reader)
     except OSError:
@@ -156,12 +155,12 @@ def sanitize_run(run_dir: str, out_dir: str | None = None) -> str:
     manifest_path = os.path.join(out_dir, "manifest.json")
     static_path = os.path.join(out_dir, "static_snapshot.json")
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             manifest = json.load(f)
     except (OSError, json.JSONDecodeError):
         manifest = {}
     try:
-        with open(static_path, "r", encoding="utf-8") as f:
+        with open(static_path, encoding="utf-8") as f:
             static = json.load(f)
     except (OSError, json.JSONDecodeError):
         static = {}
@@ -187,12 +186,15 @@ def sanitize_run(run_dir: str, out_dir: str | None = None) -> str:
     ):
         _rewrite_csv(os.path.join(out_dir, name), replacements, _CSV_REDACT_COLUMNS)
 
-    # Mark that this is a sanitized copy.
+    # Mark that this is a sanitized copy. The source folder name itself
+    # carries the original hostname (e.g. HOSTNAME_20260423_010000), so
+    # run the replacement table over it before storing.
     try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
+        with open(manifest_path, encoding="utf-8") as f:
             m = json.load(f)
         m["sanitized"] = True
-        m["sanitized_source"] = os.path.basename(run_dir)
+        source_name = os.path.basename(run_dir)
+        m["sanitized_source"] = _redact_text(source_name, replacements)
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(m, f, indent=2)
     except (OSError, json.JSONDecodeError):

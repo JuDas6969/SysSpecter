@@ -2,14 +2,34 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
 
 import psutil
 
+from ..safe_collect import safe_collect
+
+_log = logging.getLogger(__name__)
 _last_per_nic: dict[str, Any] = {}
 _last_mono: float | None = None
+
+
+@safe_collect("network_sampler.io_counters", fallback=dict)
+def _read_io_counters() -> dict[str, Any]:
+    return psutil.net_io_counters(pernic=True)
+
+
+@safe_collect("network_sampler.if_stats", fallback=dict)
+def _read_if_stats() -> dict[str, Any]:
+    return psutil.net_if_stats()
+
+
+@safe_collect("network_sampler.established_count", fallback=-1)
+def _read_established_count() -> int:
+    conns = psutil.net_connections(kind="tcp")
+    return sum(1 for c in conns if c.status == psutil.CONN_ESTABLISHED)
 
 
 @dataclass
@@ -37,20 +57,9 @@ def collect_network_sample(started_mono: float) -> list[NetworkSample]:
     now_mono = time.monotonic()
     rel = now_mono - started_mono
 
-    try:
-        per_nic = psutil.net_io_counters(pernic=True)
-    except Exception:
-        per_nic = {}
-    try:
-        stats = psutil.net_if_stats()
-    except Exception:
-        stats = {}
-
-    try:
-        conns = psutil.net_connections(kind="tcp")
-        established_count = sum(1 for c in conns if c.status == psutil.CONN_ESTABLISHED)
-    except (psutil.AccessDenied, PermissionError, Exception):
-        established_count = -1
+    per_nic = _read_io_counters()
+    stats = _read_if_stats()
+    established_count = _read_established_count()
 
     dt = max(now_mono - _last_mono, 1e-3) if _last_mono else 1.0
 

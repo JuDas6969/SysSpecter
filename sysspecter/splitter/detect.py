@@ -57,7 +57,8 @@ def _extract_series(system_rows: list[dict[str, Any]]) -> dict[str, tuple[list[f
         cpu_y.append(float(r.get("cpu_total_pct") or 0.0))
         mem_y.append(float(r.get("mem_percent") or 0.0))
         disk_y.append(float(r.get("disk_active_pct_est") or 0.0))
-    intensity = [0.5 * c + 0.3 * m + 0.2 * d for c, m, d in zip(cpu_y, mem_y, disk_y)]
+    intensity = [0.5 * c + 0.3 * m + 0.2 * d
+                 for c, m, d in zip(cpu_y, mem_y, disk_y, strict=False)]
     return {
         "cpu": (xs, cpu_y),
         "mem": (xs, mem_y),
@@ -459,8 +460,6 @@ def _filter_process_ends_by_system_impact(
     if not process_ends or len(xs) < 2 * window + 2:
         return []
     kept: list[ChangePoint] = []
-    # tolerance window around the process-end time
-    tol = max(30.0, 0.5 * window * (xs[-1] - xs[0]) / max(len(xs) - 1, 1))
     for cp in process_ends:
         # find the nearest system-sample index
         target = cp.rel_seconds

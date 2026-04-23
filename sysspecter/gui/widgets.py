@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import queue
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import ttk
-from typing import Callable
 
 from .runner import EXIT_MARKER, SubprocessRunner
 

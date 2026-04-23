@@ -5,8 +5,7 @@ Opened once per run, flushed per row, closed at end. No in-memory accumulation."
 from __future__ import annotations
 
 import csv
-from typing import Any, IO
-
+from typing import IO, Any
 
 SYSTEM_FIELDS = [
     "timestamp", "rel_seconds",

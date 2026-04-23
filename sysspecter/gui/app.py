@@ -7,13 +7,11 @@ import sys
 import tkinter as tk
 import traceback
 from tkinter import messagebox, ttk
-from typing import Optional
 
 from ..config import DEFAULT_OUTPUT_ROOT
 from .tab_compare import CompareTab
 from .tab_monitor import MonitorTab
 from .tab_runs import RunsTab
-
 
 _ABOUT_TEXT = (
     "SysSpecter — See everything. Find the cause.\n"
@@ -31,7 +29,7 @@ _ABOUT_TEXT = (
 )
 
 
-def _assets_dir() -> Optional[str]:
+def _assets_dir() -> str | None:
     """Locate the assets/ folder next to the script or bundled EXE."""
     # Running as a PyInstaller frozen exe: _MEIPASS holds the temp extract dir
     meipass = getattr(sys, "_MEIPASS", None)
@@ -52,7 +50,7 @@ def _assets_dir() -> Optional[str]:
     return None
 
 
-def _load_photo(path: str, max_height: int) -> Optional[tk.PhotoImage]:
+def _load_photo(path: str, max_height: int) -> tk.PhotoImage | None:
     """Load a PNG via Tk's PhotoImage and downsample until its height fits."""
     if not os.path.exists(path):
         return None
@@ -169,7 +167,7 @@ class App:
                     continue
 
     def _apply_header_logo(self, header: ttk.Frame) -> None:
-        wordmark_img: Optional[tk.PhotoImage] = None
+        wordmark_img: tk.PhotoImage | None = None
         if self._assets:
             wordmark_img = _load_photo(
                 os.path.join(self._assets, "logo_long.png"), max_height=48,
@@ -184,7 +182,7 @@ class App:
                       foreground="#6b7a99").pack(side="left", padx=12)
 
     def _build_about_tab(self, parent: ttk.Frame) -> None:
-        big_logo: Optional[tk.PhotoImage] = None
+        big_logo: tk.PhotoImage | None = None
         if self._assets:
             big_logo = _load_photo(os.path.join(self._assets, "logo.png"), max_height=220)
         if big_logo is not None:

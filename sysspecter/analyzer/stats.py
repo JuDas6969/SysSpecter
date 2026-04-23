@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 
 def percentile(values: list[float], pct: float) -> float | None:
@@ -42,7 +42,7 @@ def linear_regression_slope(xs: list[float], ys: list[float]) -> float | None:
         return None
     mean_x = sum(xs) / n
     mean_y = sum(ys) / n
-    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys, strict=False))
     den = sum((x - mean_x) ** 2 for x in xs)
     if den == 0:
         return None
@@ -56,14 +56,14 @@ def linear_regression_r2(xs: list[float], ys: list[float]) -> float | None:
         return None
     mean_x = sum(xs) / n
     mean_y = sum(ys) / n
-    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    num = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys, strict=False))
     den_x = sum((x - mean_x) ** 2 for x in xs)
     den_y = sum((y - mean_y) ** 2 for y in ys)
     if den_x == 0 or den_y == 0:
         return None
     slope = num / den_x
     intercept = mean_y - slope * mean_x
-    ss_res = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(xs, ys))
+    ss_res = sum((y - (slope * x + intercept)) ** 2 for x, y in zip(xs, ys, strict=False))
     ss_tot = den_y
     return max(0.0, 1.0 - ss_res / ss_tot)
 

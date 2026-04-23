@@ -26,7 +26,7 @@ class RunInfo:
 
 def _safe_json(path: str) -> dict[str, Any]:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):

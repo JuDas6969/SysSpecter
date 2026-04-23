@@ -11,12 +11,13 @@ This keeps per-second overhead low while still capturing offenders."""
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 import psutil
 
-from ..config import TOP_N_PROCESSES, PROCESS_ENUM_REFRESH_INTERVAL
+from ..config import PROCESS_ENUM_REFRESH_INTERVAL, TOP_N_PROCESSES
 
 CRITICAL_NAMES = {
     "msmpeng.exe", "mssense.exe", "mpcmdrun.exe", "smartscreen.exe",
@@ -114,7 +115,7 @@ def refresh_candidates(
         handle_list.append((handles, pid, name))
 
         io = info.get("io_counters")
-        io_total = int((io.read_bytes + io.write_bytes)) if io else 0
+        io_total = int(io.read_bytes + io.write_bytes) if io else 0
         io_list.append((io_total, pid, name))
 
     cpu_list.sort(reverse=True)

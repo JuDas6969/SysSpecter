@@ -107,11 +107,11 @@ def analyze_gpu(
     for r in adapter_rows:
         name = r.get("adapter") or "?"
 
-        def _push(key: str, val: Any):
+        def _push(key: str, val: Any, _name: str = name) -> None:
             if val in (None, ""):
                 return
             try:
-                adapters[name][key].append(float(val))
+                adapters[_name][key].append(float(val))
             except (TypeError, ValueError):
                 pass
 

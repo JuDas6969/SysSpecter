@@ -166,10 +166,22 @@ def _summarize_csv(csv_path: str) -> dict[str, Any]:
 
     total_events = 0
     matched_events = 0
-    with open(csv_path, "r", encoding="utf-8", errors="replace", newline="") as f:
+    # Look up a column by fuzzy name. Written at module scope to avoid
+    # closing over the row/header loop variables.
+    def _col(row: list[str], header: list[str] | None,
+             name_substrs: tuple[str, ...]) -> str | None:
+        if header is None:
+            return None
+        for idx, h in enumerate(header):
+            hl = h.lower()
+            for ns in name_substrs:
+                if ns in hl and idx < len(row):
+                    return row[idx].strip()
+        return None
+
+    with open(csv_path, encoding="utf-8", errors="replace", newline="") as f:
         reader = csv.reader(f)
         current_header: list[str] | None = None
-        header_by_event: dict[str, list[str]] = {}
         for row in reader:
             if not row:
                 continue
@@ -182,21 +194,8 @@ def _summarize_csv(csv_path: str) -> dict[str, Any]:
                 continue
             if first.endswith("Header") or "Event Name" in row or "TID" in row:
                 current_header = [c.strip() for c in row]
-                # Associate with the preceding event-type tag if any
                 continue
             total_events += 1
-
-            # Look up a column by fuzzy name
-            def _col(name_substrs: tuple[str, ...]) -> str | None:
-                if current_header is None:
-                    return None
-                for idx, h in enumerate(current_header):
-                    hl = h.lower()
-                    for ns in name_substrs:
-                        if ns in hl:
-                            if idx < len(row):
-                                return row[idx].strip()
-                return None
 
             ev = first.lower()
             if ev not in ("fileio", "diskio", "fileiow", "diskiow",
@@ -206,9 +205,9 @@ def _summarize_csv(csv_path: str) -> dict[str, Any]:
                 # a sub-name field — keep heuristic tolerant.
                 continue
 
-            pid_s = _col(("process id", "pid"))
-            bytes_s = _col(("size", "iosize", "bytes"))
-            image_s = _col(("image name", "process name"))
+            pid_s = _col(row, current_header, ("process id", "pid"))
+            bytes_s = _col(row, current_header, ("size", "iosize", "bytes"))
+            image_s = _col(row, current_header, ("image name", "process name"))
             try:
                 pid = int(pid_s) if pid_s else 0
             except ValueError:

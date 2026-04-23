@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Disk tier classification
 # ---------------------------------------------------------------------------
@@ -141,11 +140,6 @@ def generate_hypotheses(
             ra, rb = rows[a], rows[b]
             ha, hb = hws.get(a) or {}, hws.get(b) or {}
             ca, cb = cfgs.get(a) or {}, cfgs.get(b) or {}
-
-            a_overall = _score(ra, "overall")
-            b_overall = _score(rb, "overall")
-            a_is_worse = (a_overall is not None and b_overall is not None
-                          and b_overall - a_overall >= 3)
 
             # --- Disk tier rule
             if ra.get("primary") == "disk":
