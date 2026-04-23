@@ -1,9 +1,16 @@
-"""HTML report generator — fully offline, inline SVG charts, no CDN."""
+"""HTML report generator — fully offline, inline SVG charts, no CDN.
+
+The CSS and Jinja template live as sibling files under `styles/` and
+`templates/` so they are editable without touching Python. `_CSS` and
+`_TEMPLATE` are lazily loaded from those files on first render.
+"""
 
 from __future__ import annotations
 
 import html
 import os
+import sys
+from functools import lru_cache
 from typing import Any
 
 from jinja2 import BaseLoader, Environment, select_autoescape
@@ -16,552 +23,38 @@ from .json_export import load_json
 from .markdown_report import generate_markdown_summary
 from .svg_charts import heatmap, line_chart, stacked_area_chart
 
-_CSS = """
-body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-       color: #222; margin: 0; padding: 0; background: #f7f7f9; }
-.wrapper { max-width: 1180px; margin: 0 auto; padding: 16px 24px; }
-h1, h2, h3 { color: #1b2a4e; }
-h1 { font-size: 26px; margin-top: 8px; margin-bottom: 2px;
-     background: linear-gradient(90deg, #06b6d4 0%, #a855f7 100%);
-     -webkit-background-clip: text; background-clip: text; color: transparent;
-     display: inline-block; }
-.tagline { color: #6b7a99; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; margin: 0 0 14px 0; }
-h2 { border-bottom: 1px solid #e2e6ee; padding-bottom: 4px; margin-top: 32px; }
-h3 { margin-top: 24px; font-size: 16px; }
-.brand-bar { height: 4px; border-radius: 2px;
-             background: linear-gradient(90deg, #06b6d4 0%, #6366f1 50%, #a855f7 100%);
-             margin: 0 0 14px 0; }
-.banner { padding: 10px 14px; border-radius: 4px; margin: 8px 0 14px 0; font-size: 14px; }
-.banner-warn { background: #fff1f0; border-left: 4px solid #cf1322; color: #5a0f1c; }
-.banner-info { background: #fffbe6; border-left: 4px solid #faad14; color: #614700; }
-.card { background: #fff; border: 1px solid #e2e6ee; border-radius: 6px;
-        padding: 14px 18px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
-.kvs { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px,1fr)); gap: 6px 20px; }
-.kv { font-size: 13px; }
-.kv .k { color: #666; }
-.kv .v { color: #111; font-weight: 600; }
-.verdict { font-size: 15px; background: #fffbe6; border-left: 4px solid #faad14;
-           padding: 10px 14px; border-radius: 4px; }
-.score-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px,1fr)); gap: 10px; }
-.score { background: #f3f5fa; border-radius: 6px; padding: 10px 12px; }
-.score .name { font-size: 12px; color: #555; text-transform: uppercase; letter-spacing: 0.4px; }
-.score .val { font-size: 24px; font-weight: 700; margin-top: 4px; }
-.score.good .val { color: #389e0d; }
-.score.med .val { color: #d48806; }
-.score.bad .val { color: #cf1322; }
-.bar { background: #eef0f7; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 6px; }
-.bar > div { height: 100%; background: linear-gradient(90deg,#06b6d4,#a855f7); }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px;
-         font-weight: 600; margin-right: 6px; }
-.badge.high { background: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; }
-.badge.medium { background: #fffbe6; color: #d46b08; border: 1px solid #ffe58f; }
-.badge.low { background: #f6ffed; color: #389e0d; border: 1px solid #b7eb8f; }
-.badge.suspicious { background: #fff7e6; color: #ad6800; }
-.badge.likely { background: #fff2e8; color: #d4380d; }
-.badge.strong.evidence, .badge.strong-evidence { background: #fff1f0; color: #a8071a; }
-table { border-collapse: collapse; width: 100%; margin-top: 6px; font-size: 13px; }
-th, td { border-bottom: 1px solid #eef0f7; padding: 6px 10px; text-align: left; }
-th { background: #f6f8fc; color: #445; font-weight: 600; }
-tbody tr:hover { background: #fafbff; }
-.finding { margin-bottom: 8px; padding-left: 10px; border-left: 3px solid #2c7be5; }
-.finding.high { border-left-color: #cf1322; }
-.finding.medium { border-left-color: #faad14; }
-.finding.low { border-left-color: #52c41a; }
-.small { font-size: 12px; color: #777; }
-details > summary { cursor: pointer; font-weight: 600; color: #1b2a4e; }
-details { margin-top: 10px; }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-@media (max-width: 880px) { .grid-2 { grid-template-columns: 1fr; } }
-.footer { color: #999; font-size: 12px; margin: 40px 0 20px; text-align: center; }
-code { background: #f3f5fa; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
-"""
+
+def _resource_path(*parts: str) -> str:
+    """Locate a bundled resource next to the module.
+
+    In a PyInstaller-frozen EXE the files live under `sys._MEIPASS`; in a
+    dev checkout they sit next to this file. Prefer the dev layout, fall
+    back to the frozen layout.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(here, *parts)
+    if os.path.exists(candidate):
+        return candidate
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return os.path.join(meipass, "sysspecter", "reporter", *parts)
+    return candidate
 
 
-_TEMPLATE = """<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="utf-8"/>
-<title>SysSpecter — {{ manifest.hostname }} — {{ manifest.run_id }}</title>
-<style>{{ css }}</style>
-</head><body>
-<div class="wrapper">
+@lru_cache(maxsize=1)
+def _load_css() -> str:
+    with open(_resource_path("styles", "report.css"), encoding="utf-8") as f:
+        return f.read()
 
-<div class="brand-bar"></div>
-<h1>SysSpecter report — {{ manifest.hostname }}</h1>
-<p class="tagline">See everything. Find the cause.
-  &nbsp;&middot;&nbsp; SysSpecter v{{ manifest.sysspecter_version or '?' }}</p>
 
-{% if banner_admin %}
-<div class="banner banner-warn">
-  <b>Running as standard user.</b> Some measurements are unavailable:
-  {{ banner_admin }}. Re-run as Administrator for full coverage.
-</div>
-{% endif %}
-{% if banner_degraded %}
-<div class="banner banner-warn">
-  <b>Collector degraded.</b> {{ banner_degraded }}
-</div>
-{% endif %}
-{% if banner_low_confidence %}
-<div class="banner banner-info">
-  <b>Low sample count.</b> {{ banner_low_confidence }}
-</div>
-{% endif %}
+@lru_cache(maxsize=1)
+def _load_template() -> str:
+    with open(_resource_path("templates", "final_report.html.j2"),
+              encoding="utf-8") as f:
+        return f.read()
 
-<div class="card">
-  <div class="kvs">
-    <div class="kv"><div class="k">Run ID</div><div class="v">{{ manifest.run_id }}</div></div>
-    <div class="kv"><div class="k">Mode</div><div class="v">{{ manifest.mode }}</div></div>
-    <div class="kv"><div class="k">Started</div><div class="v">{{ manifest.started_at }}</div></div>
-    <div class="kv"><div class="k">Ended</div><div class="v">{{ manifest.ended_at }}</div></div>
-    <div class="kv"><div class="k">Actual duration</div><div class="v">{{ manifest.duration_actual_seconds }} s</div></div>
-    <div class="kv"><div class="k">Interval</div><div class="v">{{ manifest.interval_seconds }} s</div></div>
-    <div class="kv"><div class="k">Stop reason</div><div class="v">{{ manifest.stop_reason }}</div></div>
-    <div class="kv"><div class="k">Privilege</div><div class="v">{{ manifest.privilege_level }}</div></div>
-    <div class="kv"><div class="k">Target</div><div class="v">{{ target_text }}</div></div>
-    <div class="kv"><div class="k">Tags</div><div class="v">{{ manifest.tags | join(', ') or '—' }}</div></div>
-    <div class="kv"><div class="k">Tool version</div><div class="v">{{ manifest.sysspecter_version or '—' }}</div></div>
-  </div>
-</div>
 
-<h2>Executive summary</h2>
-<div class="card">
-  <div class="verdict">{{ findings.summary.verdict }}</div>
-  <h3>Scores</h3>
-  <div class="score-grid">
-    {% for s in score_cards %}
-    <div class="score {{ s.cls }}">
-      <div class="name">{{ s.name }}</div>
-      <div class="val">{{ s.val }}</div>
-      <div class="bar"><div style="width:{{ s.bar_pct }}%"></div></div>
-    </div>
-    {% endfor %}
-  </div>
-  <p class="small" style="margin-top:10px;">
-    Primary bottleneck:
-    <b>{{ scores.primary_bottleneck or 'none clearly dominant' }}</b>.
-    Secondary: {{ scores.secondary_bottlenecks | join(', ') or '—' }}.
-    Confidence: <b>{{ scores.confidence }}</b> ({{ scores.sample_count }} samples).
-  </p>
-</div>
 
-<h2>System profile</h2>
-<div class="card">
-  <div class="kvs">
-    <div class="kv"><div class="k">OS</div><div class="v">{{ static.os.caption or '—' }}</div></div>
-    <div class="kv"><div class="k">Build</div><div class="v">{{ static.os.version }} ({{ static.os.build }})</div></div>
-    <div class="kv"><div class="k">Arch</div><div class="v">{{ static.os.architecture or '—' }}</div></div>
-    <div class="kv"><div class="k">Manufacturer</div><div class="v">{{ static.computer_system.Manufacturer or '—' }}</div></div>
-    <div class="kv"><div class="k">Model</div><div class="v">{{ static.computer_system.Model or '—' }}</div></div>
-    <div class="kv"><div class="k">CPU</div><div class="v">{{ cpu_name }}</div></div>
-    <div class="kv"><div class="k">Cores</div><div class="v">{{ static.cpu.physical_cores }} physical / {{ static.cpu.logical_cores }} logical</div></div>
-    <div class="kv"><div class="k">RAM</div><div class="v">{{ ram_gb }} GB</div></div>
-    <div class="kv"><div class="k">BIOS</div><div class="v">{{ static.bios.SMBIOSBIOSVersion or static.bios.Version or '—' }} ({{ static.bios.ReleaseDate or '—' }})</div></div>
-    <div class="kv"><div class="k">Defender</div><div class="v">{{ defender_text }}</div></div>
-    <div class="kv"><div class="k">VPN adapters suspected</div><div class="v">{{ static.network.vpn_suspect_adapters | join(', ') or '—' }}</div></div>
-    <div class="kv"><div class="k">Power plan</div><div class="v">{{ power_plan }}</div></div>
-  </div>
-  <details><summary>Installed programs ({{ static.installed_programs | length }})</summary>
-    <table><thead><tr><th>Name</th><th>Version</th><th>Publisher</th></tr></thead><tbody>
-    {% for p in static.installed_programs[:200] %}
-    <tr><td>{{ p.DisplayName }}</td><td>{{ p.DisplayVersion }}</td><td>{{ p.Publisher }}</td></tr>
-    {% endfor %}</tbody></table>
-    {% if static.installed_programs|length > 200 %}<p class="small">(truncated to 200)</p>{% endif %}
-  </details>
-  <details><summary>Autoruns ({{ static.autoruns | length }})</summary>
-    <table><thead><tr><th>Name</th><th>Command</th><th>Location</th><th>User</th></tr></thead><tbody>
-    {% for a in static.autoruns %}<tr><td>{{ a.Name }}</td><td><code>{{ a.Command }}</code></td><td>{{ a.Location }}</td><td>{{ a.User }}</td></tr>{% endfor %}
-    </tbody></table>
-  </details>
-</div>
-
-<h2>Charts</h2>
-<div class="card">
-  <div>{{ cpu_chart | safe }}</div>
-  <div>{{ mem_chart | safe }}</div>
-  <div>{{ disk_chart | safe }}</div>
-  <div>{{ net_chart | safe }}</div>
-  <div>{{ heatmap_svg | safe }}</div>
-  {% if disk_stack_chart %}<div>{{ disk_stack_chart | safe }}</div>{% endif %}
-  {% if net_stack_chart %}<div>{{ net_stack_chart | safe }}</div>{% endif %}
-  {% if app_cpu_stack_chart %}<div>{{ app_cpu_stack_chart | safe }}</div>{% endif %}
-  {% if app_rss_stack_chart %}<div>{{ app_rss_stack_chart | safe }}</div>{% endif %}
-  {% if latency_chart %}<div>{{ latency_chart | safe }}</div>{% endif %}
-  {% if top_processes_chart %}<div>{{ top_processes_chart | safe }}</div>{% endif %}
-</div>
-
-<h2>Key findings</h2>
-<div class="card">
-  {% if findings.anomalies %}
-    {% for a in findings.anomalies %}
-    <div class="finding {{ a.severity }}"><span class="badge {{ a.severity }}">{{ a.severity }}</span>
-      <b>{{ a.kind }}</b> — {{ a.description }}
-    </div>
-    {% endfor %}
-  {% else %}
-    <p class="small">No anomalies crossed their thresholds.</p>
-  {% endif %}
-</div>
-
-<h2>Slowdown windows</h2>
-<div class="card">
-  {% if findings.slowdowns %}
-  <table><thead><tr>
-    <th>s=start</th><th>s=end</th><th>dur</th><th>confidence</th>
-    <th>reasons</th><th>peak cpu</th><th>peak mem</th><th>peak disk</th><th>top cpu offender</th>
-  </tr></thead><tbody>
-  {% for s in findings.slowdowns %}
-  <tr>
-    <td>{{ '%.0f' % s.start_rel }}</td><td>{{ '%.0f' % s.end_rel }}</td>
-    <td>{{ s.duration_s }}</td>
-    <td><span class="badge {{ s.confidence | replace(' ','-') }}">{{ s.confidence }}</span></td>
-    <td>{{ s.reason_tags | join(', ') }}</td>
-    <td>{{ s.peak_cpu_pct }}%</td><td>{{ s.peak_mem_pct }}%</td><td>{{ s.peak_disk_pct }}%</td>
-    <td>{% if s.offenders.top_cpu %}{{ s.offenders.top_cpu[0].name }} ({{ s.offenders.top_cpu[0].value }}%){% else %}—{% endif %}</td>
-  </tr>
-  <tr><td colspan="9" class="small">{{ s.description }}</td></tr>
-  {% endfor %}</tbody></table>
-  {% else %}<p class="small">No slowdown windows detected above the minimum duration threshold.</p>{% endif %}
-</div>
-
-<h2>Leak candidates</h2>
-<div class="card">
-  {% set leaks = findings.leaks %}
-  {% for kind in ['memory','handles','threads'] %}
-    {% if leaks[kind] %}
-    <h3>{{ kind }}</h3>
-    <table><thead><tr><th>pid</th><th>name</th><th>confidence</th><th>detail</th></tr></thead><tbody>
-    {% for it in leaks[kind] %}
-    <tr><td>{{ it.pid }}</td><td>{{ it.process_name }}</td>
-        <td><span class="badge {{ it.confidence | replace(' ','-') }}">{{ it.confidence }}</span></td>
-        <td>{{ it.description }}</td></tr>
-    {% endfor %}</tbody></table>
-    {% endif %}
-  {% endfor %}
-  {% if not leaks.memory and not leaks.handles and not leaks.threads %}
-  <p class="small">No resource-leak candidates met the heuristic thresholds.</p>
-  {% endif %}
-</div>
-
-<h2>Top applications <span class="small">(PIDs grouped)</span></h2>
-<div class="card">
-{% if findings.apps and findings.apps.top_cpu %}
-{% for label, title in app_sections %}
-  {% set items = findings.apps[label] %}
-  {% if items %}
-  <h3>{{ title }}</h3>
-  <table><thead><tr>
-    <th>application</th><th>PIDs</th><th>cpu avg %</th><th>cpu peak %</th><th>rss peak MB</th>
-    <th>handles peak</th><th>threads peak</th><th>io avg B/s</th>
-  </tr></thead><tbody>
-  {% for i in items %}
-  <tr>
-    <td>{% if i.is_target %}<b>{{ i.display_name }}</b>{% else %}{{ i.display_name }}{% endif %}
-        <span class="small">({{ i.app_key }})</span></td>
-    <td>{{ i.pid_count }}</td>
-    <td>{{ i.cpu_pct_avg }}</td><td>{{ i.cpu_pct_max }}</td>
-    <td>{{ i.rss_mb_max }}</td>
-    <td>{{ i.num_handles_max }}</td>
-    <td>{{ i.num_threads_max }}</td>
-    <td>{{ ((i.io_read_bps_avg or 0) + (i.io_write_bps_avg or 0))|round(0) }}</td>
-  </tr>
-  {% endfor %}</tbody></table>
-  {% endif %}
-{% endfor %}
-{% else %}
-<p class="small">No per-app aggregates available.</p>
-{% endif %}
-</div>
-
-<h2>Offenders <span class="small">(per-PID)</span></h2>
-<div class="card">
-{% for label, title in offender_sections %}
-  {% set items = findings.offenders[label] %}
-  {% if items %}
-  <h3>{{ title }}</h3>
-  <table><thead><tr>
-    <th>pid</th><th>name</th><th>cpu avg %</th><th>cpu max %</th><th>rss MB</th>
-    <th>handles</th><th>handle growth</th><th>threads</th><th>thread growth</th><th>io avg</th>
-  </tr></thead><tbody>
-  {% for i in items %}
-  <tr>
-    <td>{{ i.pid }}</td>
-    <td>{% if i.is_target %}<b>{{ i.name }}</b>{% else %}{{ i.name }}{% endif %}</td>
-    <td>{{ i.cpu_pct_avg }}</td><td>{{ i.cpu_pct_max }}</td>
-    <td>{{ i.rss_mb_max }}</td>
-    <td>{{ i.num_handles_max }}</td><td>{{ i.handle_growth }}</td>
-    <td>{{ i.num_threads_max }}</td><td>{{ i.thread_growth }}</td>
-    <td>{{ ((i.io_read_bps_avg or 0) + (i.io_write_bps_avg or 0))|round(0) }}</td>
-  </tr>
-  {% endfor %}</tbody></table>
-  {% endif %}
-{% endfor %}
-</div>
-
-<h2>Network attribution <span class="small">(connection-based)</span></h2>
-<div class="card">
-{% if findings.network_attribution and findings.network_attribution.by_app %}
-<p class="small">Captured {{ findings.network_attribution.samples }} connection snapshot(s).
-  Byte-level per-process attribution is not available via psutil on Windows — counts below are
-  based on which processes owned TCP/UDP sockets at snapshot time.</p>
-<h3>By application</h3>
-<table><thead><tr>
-  <th>application</th><th>PIDs</th><th>avg conns</th>
-  <th>unique remotes</th><th>tcp %</th><th>udp %</th><th>top remote hosts</th>
-</tr></thead><tbody>
-{% for a in findings.network_attribution.by_app %}
-<tr>
-  <td>{{ a.display_name }} <span class="small">({{ a.app_key }})</span></td>
-  <td>{{ a.pid_count }}</td>
-  <td>{{ a.avg_concurrent_conns }}</td>
-  <td>{{ a.unique_remote_count }}</td>
-  <td>{{ a.tcp_share_pct }}</td>
-  <td>{{ a.udp_share_pct }}</td>
-  <td class="small">{% for r in a.top_remotes %}{{ r.host }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
-</tr>
-{% endfor %}
-</tbody></table>
-<h3>By PID</h3>
-<table><thead><tr>
-  <th>pid</th><th>name</th><th>avg conns</th>
-  <th>unique remotes</th><th>tcp %</th><th>udp %</th><th>top remote hosts</th>
-</tr></thead><tbody>
-{% for p in findings.network_attribution.by_pid %}
-<tr>
-  <td>{{ p.pid }}</td>
-  <td>{{ p.name }}</td>
-  <td>{{ p.avg_concurrent_conns }}</td>
-  <td>{{ p.unique_remote_count }}</td>
-  <td>{{ p.tcp_share_pct }}</td>
-  <td>{{ p.udp_share_pct }}</td>
-  <td class="small">{% for r in p.top_remotes %}{{ r.host }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
-</tr>
-{% endfor %}
-</tbody></table>
-{% else %}
-<p class="small">No connection snapshots captured (run too short, or no privilege to enumerate sockets).</p>
-{% endif %}
-</div>
-
-<h2>Latency &amp; DNS</h2>
-<div class="card">
-{% if findings.latency_analysis and findings.latency_analysis.targets %}
-<p class="small">Per-target summary of ICMP round-trip time, jitter, packet loss, and
-  DNS resolution latency ({{ findings.latency_analysis.samples }} sample rows).</p>
-<table><thead><tr>
-  <th>target</th><th>resolved</th><th>samples</th>
-  <th>loss %</th><th>rtt avg ms</th><th>rtt p95 ms</th><th>rtt max ms</th>
-  <th>jitter avg ms</th>
-  <th>dns avg ms</th><th>dns p95 ms</th><th>dns max ms</th><th>dns fail %</th>
-</tr></thead><tbody>
-{% for t in findings.latency_analysis.targets %}
-<tr>
-  <td>{{ t.target }}</td>
-  <td class="small">{{ t.hostname_resolved or '—' }}</td>
-  <td>{{ t.samples }}</td>
-  <td>{{ t.loss_rate_pct }}</td>
-  <td>{{ t.rtt_avg_ms if t.rtt_avg_ms is not none else '—' }}</td>
-  <td>{{ t.rtt_p95_ms if t.rtt_p95_ms is not none else '—' }}</td>
-  <td>{{ t.rtt_max_ms if t.rtt_max_ms is not none else '—' }}</td>
-  <td>{{ t.jitter_avg_ms if t.jitter_avg_ms is not none else '—' }}</td>
-  <td>{{ t.resolve_avg_ms if t.resolve_avg_ms is not none else '—' }}</td>
-  <td>{{ t.resolve_p95_ms if t.resolve_p95_ms is not none else '—' }}</td>
-  <td>{{ t.resolve_max_ms if t.resolve_max_ms is not none else '—' }}</td>
-  <td>{{ t.resolve_fail_rate_pct }}</td>
-</tr>
-{% endfor %}
-</tbody></table>
-{% if findings.latency_analysis.dns_findings %}
-<h3>DNS findings</h3>
-<ul>
-{% for f in findings.latency_analysis.dns_findings %}
-  <li><strong>{{ f.severity }}</strong> — {{ f.target }}: {{ f.detail }}</li>
-{% endfor %}
-</ul>
-{% endif %}
-{% else %}
-<p class="small">No latency samples captured.</p>
-{% endif %}
-</div>
-
-<h2>GPU metrics <span class="small">(Phase 3 — optional)</span></h2>
-<div class="card">
-{% if findings.gpu_analysis and findings.gpu_analysis.enabled %}
-  <p class="small">{{ findings.gpu_analysis.samples }} GPU samples captured.</p>
-  {% if findings.gpu_analysis.engines %}
-  <h3>Engines</h3>
-  <table><thead><tr>
-    <th>engine</th><th>luid</th><th>avg %</th><th>peak %</th><th>samples</th>
-  </tr></thead><tbody>
-  {% for e in findings.gpu_analysis.engines %}
-  <tr><td>{{ e.engine_type }}</td><td class="small">{{ e.luid }}</td>
-      <td>{{ e.avg_pct }}</td><td>{{ e.peak_pct }}</td><td>{{ e.samples }}</td></tr>
-  {% endfor %}
-  </tbody></table>
-  {% endif %}
-  {% if findings.gpu_analysis.top_apps %}
-  <h3>Top apps by GPU memory</h3>
-  <table><thead><tr>
-    <th>application</th><th>PIDs</th><th>dedicated peak MB</th>
-    <th>dedicated avg MB</th><th>shared peak MB</th>
-  </tr></thead><tbody>
-  {% for a in findings.gpu_analysis.top_apps %}
-  <tr><td>{{ a.display_name }} <span class="small">({{ a.app_key }})</span></td>
-      <td>{{ a.pid_count }}</td>
-      <td>{{ a.dedicated_peak_mb }}</td>
-      <td>{{ a.dedicated_avg_mb }}</td>
-      <td>{{ a.shared_peak_mb }}</td></tr>
-  {% endfor %}
-  </tbody></table>
-  {% endif %}
-  {% if findings.gpu_analysis.adapters %}
-  <h3>Adapter telemetry (nvidia-smi)</h3>
-  <table><thead><tr>
-    <th>adapter</th><th>temp avg °C</th><th>temp peak °C</th>
-    <th>power avg W</th><th>power peak W</th>
-    <th>mem used avg MB</th><th>mem used peak MB</th>
-    <th>util avg %</th><th>util peak %</th>
-  </tr></thead><tbody>
-  {% for a in findings.gpu_analysis.adapters %}
-  <tr><td>{{ a.adapter }}</td>
-      <td>{{ a.temp_avg_c if a.temp_avg_c is not none else '—' }}</td>
-      <td>{{ a.temp_peak_c if a.temp_peak_c is not none else '—' }}</td>
-      <td>{{ a.power_avg_w if a.power_avg_w is not none else '—' }}</td>
-      <td>{{ a.power_peak_w if a.power_peak_w is not none else '—' }}</td>
-      <td>{{ a.mem_used_avg_mb if a.mem_used_avg_mb is not none else '—' }}</td>
-      <td>{{ a.mem_used_peak_mb if a.mem_used_peak_mb is not none else '—' }}</td>
-      <td>{{ a.util_avg_pct if a.util_avg_pct is not none else '—' }}</td>
-      <td>{{ a.util_peak_pct if a.util_peak_pct is not none else '—' }}</td></tr>
-  {% endfor %}
-  </tbody></table>
-  {% endif %}
-  {% if findings.gpu_analysis.findings %}
-  <h3>GPU findings</h3>
-  <ul>{% for f in findings.gpu_analysis.findings %}
-    <li><strong>{{ f.severity }}</strong> — {{ f.detail }}</li>
-  {% endfor %}</ul>
-  {% endif %}
-{% else %}
-  <p class="small">GPU collection was not enabled for this run (use <code>--gpu</code> or <code>--phase3</code>).</p>
-{% endif %}
-</div>
-
-<h2>Event-log correlation <span class="small">(Phase 3 — optional)</span></h2>
-<div class="card">
-{% if findings.event_correlation and findings.event_correlation.enabled %}
-  <p class="small">{{ findings.event_correlation.count }} relevant events captured.
-    {{ findings.event_correlation.correlated_to_slowdowns }} correlated to slowdown windows (±15 s).</p>
-  {% if findings.event_correlation.by_bucket %}
-  <p class="small">By category:
-    {% for b, c in findings.event_correlation.by_bucket.items() %}
-      <code>{{ b }}</code>: {{ c }}{% if not loop.last %}, {% endif %}
-    {% endfor %}
-  </p>
-  {% endif %}
-  {% if findings.event_correlation.top_events %}
-  <h3>Top events</h3>
-  <table><thead><tr>
-    <th>rel_s</th><th>level</th><th>bucket</th><th>provider</th><th>id</th>
-    <th>message</th><th>in slowdown?</th>
-  </tr></thead><tbody>
-  {% for e in findings.event_correlation.top_events %}
-  <tr><td>{{ e.rel_seconds if e.rel_seconds is not none else '—' }}</td>
-      <td>{{ e.level }}</td>
-      <td>{{ e.bucket }}</td>
-      <td class="small">{{ e.provider }}</td>
-      <td>{{ e.id }}</td>
-      <td class="small">{{ e.message }}</td>
-      <td>{% if e.correlated_slowdowns %}yes ({{ e.correlated_slowdowns | length }}){% else %}—{% endif %}</td>
-  </tr>
-  {% endfor %}
-  </tbody></table>
-  {% endif %}
-{% else %}
-  <p class="small">Event-log collection was not enabled for this run (use <code>--event-logs</code> or <code>--phase3</code>).</p>
-{% endif %}
-</div>
-
-<h2>ETW disk I/O <span class="small">(Phase 3 — optional, admin required)</span></h2>
-<div class="card">
-{% if findings.etw_disk and findings.etw_disk.enabled %}
-  {% if findings.etw_disk.by_pid %}
-  <p class="small">Per-process disk bytes attributed from kernel ETW trace.
-    This is the only path for true per-process disk-I/O bytes on Windows — psutil cannot provide it.</p>
-  <table><thead><tr>
-    <th>pid</th><th>name</th><th>read MB</th><th>write MB</th>
-    <th>read ops</th><th>write ops</th>
-  </tr></thead><tbody>
-  {% for p in findings.etw_disk.by_pid %}
-  <tr><td>{{ p.pid }}</td><td>{{ p.name }}</td>
-      <td>{{ '%.1f' | format(p.read_bytes / 1048576) }}</td>
-      <td>{{ '%.1f' | format(p.write_bytes / 1048576) }}</td>
-      <td>{{ p.read_ops }}</td><td>{{ p.write_ops }}</td></tr>
-  {% endfor %}
-  </tbody></table>
-  {% if findings.etw_disk.totals %}
-  <p class="small">Totals: {{ '%.1f' | format((findings.etw_disk.totals.read_bytes or 0) / 1048576) }} MB read,
-    {{ '%.1f' | format((findings.etw_disk.totals.write_bytes or 0) / 1048576) }} MB written,
-    {{ findings.etw_disk.totals.events_attributed }}/{{ findings.etw_disk.totals.events_total }} events attributed.</p>
-  {% endif %}
-  {% else %}
-  <p class="small">ETW session ran but no attributable events were parsed
-    ({{ findings.etw_disk.reason or 'unknown' }}).</p>
-  {% endif %}
-{% else %}
-  <p class="small">ETW disk capture was not enabled for this run (use <code>--etw</code> or <code>--phase3</code>; admin required).</p>
-{% endif %}
-</div>
-
-<h2>Bottleneck analysis</h2>
-<div class="card">
-  {% if findings.bottlenecks.reasons %}
-    {% for dim, rs in findings.bottlenecks.reasons.items() %}
-      <h3>{{ dim }} (score {{ findings.bottlenecks.scores[dim] }})</h3>
-      <ul>{% for r in rs %}<li>{{ r }}</li>{% endfor %}</ul>
-    {% endfor %}
-  {% else %}
-    <p class="small">No dimension accumulated enough evidence to be flagged as a bottleneck.</p>
-  {% endif %}
-</div>
-
-<h2>Score explanation</h2>
-<div class="card">
-  {% for s in score_detail_rows %}
-    <h3>{{ s.name }} — <span style="color:#2c7be5;">{{ s.val }}</span></h3>
-    <pre style="background:#f3f5fa;padding:8px 12px;border-radius:4px;font-size:12px;white-space:pre-wrap;">{{ s.json }}</pre>
-  {% endfor %}
-  <p class="small">
-    Overall is a weighted blend of the individual scores using weights
-    {{ scores.weights | tojson }}.
-  </p>
-</div>
-
-<h2>Test metadata</h2>
-<div class="card">
-  <div class="kvs">
-    <div class="kv"><div class="k">Sampling interval</div><div class="v">{{ manifest.interval_seconds }} s</div></div>
-    <div class="kv"><div class="k">Requested duration</div><div class="v">{{ manifest.duration_requested_seconds or 'manual stop' }}</div></div>
-    <div class="kv"><div class="k">Latency targets</div><div class="v">{{ manifest.latency_targets | join(', ') }}</div></div>
-    <div class="kv"><div class="k">Output root</div><div class="v"><code>{{ manifest.output_root }}</code></div></div>
-  </div>
-</div>
-
-<h2>Recommendations</h2>
-<div class="card">
-  {% if recommendations %}
-  <ul>{% for r in recommendations %}<li>{{ r }}</li>{% endfor %}</ul>
-  <p class="small">These are observations based on collected evidence, not automated changes.</p>
-  {% else %}
-  <p class="small">No specific recommendations — the run did not trigger enough evidence to suggest changes.</p>
-  {% endif %}
-</div>
-
-<div class="footer">
-  Generated by SysSpecter · artifacts: <code>{{ manifest.run_dir }}</code><br/>
-  &copy; 2026 David Juriga
-</div>
-
-</div></body></html>
-"""
 
 
 def _score_class(v: float) -> str:
@@ -635,7 +128,7 @@ def _render(
     process_rows: list[dict[str, Any]],
 ) -> str:
     env = Environment(loader=BaseLoader(), autoescape=select_autoescape())
-    tpl = env.from_string(_TEMPLATE)
+    tpl = env.from_string(_load_template())
 
     xs = [float(r.get("rel_seconds") or 0.0) for r in system_rows]
     cpu_y = [float(r.get("cpu_total_pct") or 0.0) for r in system_rows]
@@ -937,7 +430,7 @@ def _render(
         )
 
     return tpl.render(
-        css=_CSS,
+        css=_load_css(),
         manifest=manifest,
         static=static,
         findings=findings,

@@ -63,6 +63,23 @@ REM Bundle LICENSE + third-party notices next to the EXE.
 if exist "%HERE%LICENSE" copy /Y "%HERE%LICENSE" "%HERE%dist\LICENSE.txt" >NUL
 if exist "%HERE%THIRD_PARTY_NOTICES.md" copy /Y "%HERE%THIRD_PARTY_NOTICES.md" "%HERE%dist\THIRD_PARTY_NOTICES.md" >NUL
 
+REM Generate CycloneDX SBOM for the runtime dependency set.
+"%PY%" -c "import cyclonedx_py" 2>NUL
+if errorlevel 1 (
+  echo  Skipping SBOM: cyclonedx-bom not installed -- run "pip install -r requirements-dev.txt" first.
+) else (
+  echo  Generating CycloneDX SBOM ...
+  "%PY%" -m cyclonedx_py requirements -i "%HERE%requirements.txt" -o "%HERE%dist\SysSpecter.sbom.json" --output-format JSON
+  if errorlevel 1 (
+    echo  WARNING: SBOM generation failed.
+  ) else (
+    echo  Wrote dist\SysSpecter.sbom.json
+  )
+)
+
+REM SHA-256 checksum for the EXE (lets customers verify the drop).
+certutil -hashfile "%HERE%dist\SysSpecter.exe" SHA256 > "%HERE%dist\SysSpecter.exe.sha256" 2>NUL
+
 echo.
 echo ============================================================
 echo  Build OK

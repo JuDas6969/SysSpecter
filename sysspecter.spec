@@ -28,6 +28,15 @@ for name in ("logo.png", "logo_long.png", "icon.png"):
     if os.path.exists(p):
         _datas.append((p, "assets"))
 
+# Bundle the HTML report template + CSS so html_report.py can load them
+# at runtime from inside the frozen EXE.
+_datas.append((os.path.join("sysspecter", "reporter", "templates",
+                            "final_report.html.j2"),
+               os.path.join("sysspecter", "reporter", "templates")))
+_datas.append((os.path.join("sysspecter", "reporter", "styles",
+                            "report.css"),
+               os.path.join("sysspecter", "reporter", "styles")))
+
 _icon_path = os.path.join("assets", "icon.ico")
 _icon = _icon_path if os.path.exists(_icon_path) else None
 
