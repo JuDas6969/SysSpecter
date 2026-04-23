@@ -28,6 +28,44 @@ _HEARTBEAT_RE = re.compile(
 )
 
 
+# Presets the user can pick with one click. Values map onto the Monitor-tab
+# fields. `duration_seconds = None` means "use manual stop".
+_PRESETS: dict[str, dict[str, object]] = {
+    "— custom —": {},  # no-op; user is editing by hand
+
+    "Quick idle 5 min": {
+        "mode": "baseline", "duration_seconds": 5 * 60,
+        "manual_stop": False, "phase3": (),
+    },
+    "Baseline 30 min": {
+        "mode": "baseline", "duration_seconds": 30 * 60,
+        "manual_stop": False, "phase3": (),
+    },
+    "Workload 30 min": {
+        "mode": "workload", "duration_seconds": 30 * 60,
+        "manual_stop": False, "phase3": (),
+    },
+    "Long baseline 1 h": {
+        "mode": "baseline", "duration_seconds": 60 * 60,
+        "manual_stop": False, "phase3": ("event_logs",),
+    },
+    "Full Phase 3 run 15 min (admin)": {
+        "mode": "support", "duration_seconds": 15 * 60,
+        "manual_stop": False, "phase3": ("gpu", "event_logs", "etw"),
+    },
+    "VPN troubleshoot 10 min": {
+        "mode": "support", "duration_seconds": 10 * 60,
+        "manual_stop": False,
+        "latency_targets": "127.0.0.1, 8.8.8.8, 1.1.1.1, your.vpn.gateway",
+        "phase3": ("event_logs",),
+    },
+    "Support: user complaint (manual stop)": {
+        "mode": "support", "duration_seconds": None,
+        "manual_stop": True, "phase3": (),
+    },
+}
+
+
 _TT_MODE = (
     "support     — free-running 'my PC is slow' diagnostics; use Ctrl+C / Stop to end.\n"
     "baseline    — measure idle noise; targets not needed.\n"
@@ -99,8 +137,32 @@ class MonitorTab(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(99, weight=1)
 
+        # --- Preset dropdown (fills all other fields with one click)
+        preset_bar = ttk.Frame(self)
+        preset_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(preset_bar, text="Preset:").pack(side="left")
+        self._preset_var = tk.StringVar(value="— custom —")
+        self._preset_combo = ttk.Combobox(
+            preset_bar, textvariable=self._preset_var, state="readonly",
+            width=32,
+            values=list(_PRESETS.keys()),
+        )
+        self._preset_combo.pack(side="left", padx=(6, 0))
+        self._preset_combo.bind("<<ComboboxSelected>>", self._on_preset_chosen)
+        tooltip(self._preset_combo,
+                "One-click-fills the fields below for typical scenarios. "
+                "Editing any field afterwards keeps your change but marks the "
+                "preset as 'custom'.")
+        ttk.Label(
+            preset_bar,
+            text=("Use these for most support cases; only use 'custom' "
+                  "when you need uncommon thresholds or targets."),
+            foreground="#6b7a99",
+            font=("Segoe UI", 9, "italic"),
+        ).pack(side="left", padx=(12, 0))
+
         form = ttk.LabelFrame(self, text="Session options", padding=8)
-        form.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        form.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         form.columnconfigure(1, weight=1)
 
         # --- Mode
@@ -201,7 +263,7 @@ class MonitorTab(ttk.Frame):
 
         # --- Phase 3
         p3 = ttk.LabelFrame(self, text="Phase 3 optional collectors", padding=8)
-        p3.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        p3.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         gpu_cb = ttk.Checkbutton(p3, text="GPU metrics", variable=self._enable_gpu)
         gpu_cb.grid(row=0, column=0, padx=6)
         tooltip(gpu_cb, _TT_GPU)
@@ -225,11 +287,11 @@ class MonitorTab(ttk.Frame):
                 foreground="#a8071a", background="#fff1f0",
                 padding=(10, 6),
             )
-            warn.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+            warn.grid(row=3, column=0, sticky="ew", pady=(0, 6))
 
         # --- Actions
         actions = ttk.Frame(self)
-        actions.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+        actions.grid(row=4, column=0, sticky="ew", pady=(0, 8))
         self.start_btn = ttk.Button(actions, text="Start monitor", command=self._start)
         self.start_btn.grid(row=0, column=0, padx=(0, 8))
         tooltip(self.start_btn, _TT_START)
@@ -244,7 +306,7 @@ class MonitorTab(ttk.Frame):
 
         # --- Progress bar
         progress_row = ttk.Frame(self)
-        progress_row.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        progress_row.grid(row=5, column=0, sticky="ew", pady=(0, 8))
         progress_row.columnconfigure(0, weight=1)
         self.progress = ttk.Progressbar(progress_row, mode="determinate", maximum=100)
         self.progress.grid(row=0, column=0, sticky="ew")
@@ -261,6 +323,30 @@ class MonitorTab(ttk.Frame):
         self.log.on_line = self._on_log_line
 
     # --------------------------------------------------------------- Helpers
+    def _on_preset_chosen(self, _event=None) -> None:
+        name = self._preset_var.get()
+        spec = _PRESETS.get(name)
+        if not spec:
+            return
+        mode = spec.get("mode")
+        if isinstance(mode, str):
+            self._mode.set(mode)
+        dur = spec.get("duration_seconds")
+        if dur is None:
+            self._manual_stop.set(True)
+        else:
+            self._duration_value.set(str(int(dur)))
+            self._duration_unit.set("s")
+            self._manual_stop.set(bool(spec.get("manual_stop", False)))
+        lat = spec.get("latency_targets")
+        if isinstance(lat, str):
+            self._latency_targets.set(lat)
+        phase3 = spec.get("phase3") or ()
+        self._enable_gpu.set("gpu" in phase3)
+        self._enable_eventlog.set("event_logs" in phase3)
+        self._enable_etw.set("etw" in phase3)
+        self._refresh_preview()
+
     def _refresh_preview(self) -> None:
         try:
             s = self._duration_seconds(raise_on_empty=False)

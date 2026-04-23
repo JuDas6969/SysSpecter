@@ -56,8 +56,8 @@ class RunsTab(ttk.Frame):
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=2)
-        self.rowconfigure(3, weight=1)
+        self.rowconfigure(2, weight=2)
+        self.rowconfigure(4, weight=1)
 
         top = ttk.Frame(self)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -72,12 +72,31 @@ class RunsTab(ttk.Frame):
         btn_refresh.grid(row=0, column=2)
         tooltip(btn_refresh, _TT["refresh"])
 
+        # Filter toolbar (hostname / tag / substring)
+        filter_bar = ttk.Frame(self)
+        filter_bar.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        filter_bar.columnconfigure(1, weight=1)
+        ttk.Label(filter_bar, text="Filter:").grid(row=0, column=0, sticky="w")
+        self._filter_var = tk.StringVar(value="")
+        filter_entry = ttk.Entry(filter_bar, textvariable=self._filter_var)
+        filter_entry.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        tooltip(filter_entry,
+                "Substring match across run_id, hostname, mode, tags, "
+                "and primary bottleneck. Case-insensitive.")
+        self._match_count_var = tk.StringVar(value="")
+        ttk.Label(filter_bar, textvariable=self._match_count_var,
+                  foreground="#6b7a99").grid(row=0, column=2, padx=(0, 6))
+        ttk.Button(filter_bar, text="Clear",
+                   command=lambda: self._filter_var.set("")).grid(row=0, column=3)
+        self._filter_var.trace_add("write", lambda *a: self._apply_filter())
+        self._all_rows: list = []  # cached full scan
+
         self.table = RunsTable(self, selectmode="browse")
-        self.table.grid(row=1, column=0, sticky="nsew")
+        self.table.grid(row=2, column=0, sticky="nsew")
         self.table.bind_double_click(lambda p: self._open_report(p))
 
         actions = ttk.Frame(self)
-        actions.grid(row=2, column=0, sticky="ew", pady=(8, 8))
+        actions.grid(row=3, column=0, sticky="ew", pady=(8, 8))
         defs = [
             ("Open report", self._action_open_report, _TT["open_report"]),
             ("Open folder", self._action_open_folder, _TT["open_folder"]),
@@ -94,9 +113,9 @@ class RunsTab(ttk.Frame):
             btn.grid(row=0, column=col, padx=(0, 6))
             tooltip(btn, tip)
 
-        ttk.Label(self, text="Command output:").grid(row=2, column=0, sticky="sw", pady=(0, 0))
+        ttk.Label(self, text="Command output:").grid(row=3, column=0, sticky="sw", pady=(0, 0))
         self.log = LogPane(self)
-        self.log.grid(row=3, column=0, sticky="nsew")
+        self.log.grid(row=4, column=0, sticky="nsew")
 
     # ------------------------------------------------------------------ helpers
     def refresh(self) -> None:
@@ -105,8 +124,27 @@ class RunsTab(ttk.Frame):
         except Exception as e:
             self.log.append(f"scan failed: {e}")
             rows = []
-        self.table.set_rows(rows)
+        self._all_rows = list(rows)
+        self._apply_filter()
         self.log.append(f"[refresh: {len(rows)} run(s) under {self._get_output_root()}]")
+
+    def _apply_filter(self) -> None:
+        needle = (self._filter_var.get() or "").strip().lower()
+        if not needle:
+            visible = self._all_rows
+        else:
+            def _match(r) -> bool:
+                haystack = " ".join(filter(None, [
+                    r.run_id, r.hostname, r.mode,
+                    r.primary_bottleneck,
+                    r.stop_reason,
+                ])).lower()
+                return needle in haystack
+            visible = [r for r in self._all_rows if _match(r)]
+        self.table.set_rows(visible)
+        self._match_count_var.set(
+            f"{len(visible)} / {len(self._all_rows)}" if self._all_rows else ""
+        )
 
     def _require_selection(self) -> str | None:
         paths = self.table.selected_paths()

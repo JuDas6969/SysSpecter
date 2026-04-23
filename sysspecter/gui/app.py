@@ -13,6 +13,7 @@ from ..settings import UserPrefs, load_prefs
 from .components.status_bar import StatusBar
 from .components.toast import ToastService
 from .tab_compare import CompareTab
+from .tab_history import HistoryTab
 from .tab_monitor import MonitorTab
 from .tab_runs import RunsTab
 from .tab_settings import SettingsTab
@@ -115,6 +116,9 @@ class App:
             get_output_root=lambda: self._output_root,
         )
 
+        self.history_tab = HistoryTab(
+            self.notebook, get_output_root=lambda: self._output_root,
+        )
         self.settings_tab = SettingsTab(
             self.notebook, prefs=self._prefs,
             on_saved=self._on_settings_saved,
@@ -123,6 +127,7 @@ class App:
         self.notebook.add(self.monitor_tab, text="Monitor")
         self.notebook.add(self.runs_tab, text="Runs")
         self.notebook.add(self.compare_tab, text="Compare")
+        self.notebook.add(self.history_tab, text="History")
         self.notebook.add(self.settings_tab, text="Settings")
 
         about = ttk.Frame(self.notebook, padding=16)
@@ -162,7 +167,7 @@ class App:
         try:
             idx = self.notebook.index(self.notebook.select())
             tabs = (self.monitor_tab, self.runs_tab, self.compare_tab,
-                    self.settings_tab, None)
+                    self.history_tab, self.settings_tab, None)
             return tabs[idx] if 0 <= idx < len(tabs) else None
         except tk.TclError:
             return None
@@ -252,6 +257,7 @@ class App:
         try:
             self.runs_tab.refresh()
             self.compare_tab.refresh()
+            self.history_tab.refresh()
         except Exception:
             pass
 

@@ -98,6 +98,12 @@ def _build_parser() -> argparse.ArgumentParser:
     g.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT,
                    help="Default output root shown in the UI (default: %(default)s)")
 
+    doc = sub.add_parser("doctor",
+                         help="Self-check: verify Python / PowerShell / logman / "
+                              "tracerpt / output-root are usable")
+    doc.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT,
+                     help="Output root to probe for writability (default: %(default)s)")
+
     sp = sub.add_parser(
         "split",
         help="Split a finished run into phases based on metric change points",
@@ -310,6 +316,11 @@ def _cmd_gui(args: argparse.Namespace) -> int:
     return run_gui(output_root=args.output_root)
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from sysspecter.doctor import print_report, run_all
+    return print_report(run_all(args.output_root))
+
+
 def _cmd_sanitize(args: argparse.Namespace) -> int:
     import json
 
@@ -408,6 +419,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_gui(args)
     if args.command == "sanitize":
         return _cmd_sanitize(args)
+    if args.command == "doctor":
+        return _cmd_doctor(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

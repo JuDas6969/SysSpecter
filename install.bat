@@ -2,6 +2,10 @@
 setlocal EnableExtensions EnableDelayedExpansion
 title SysSpecter - Installer
 
+REM Handle --uninstall first so the header banner only shows for installs.
+if /i "%~1"=="--uninstall" goto :uninstall
+if /i "%~1"=="/uninstall" goto :uninstall
+
 echo ============================================================
 echo   SysSpecter Installer
 echo   See everything. Find the cause.
@@ -234,4 +238,52 @@ set "SS_DIR="
 set /p "SS_DIR=Install path for SysSpecter [C:\SysSpecter]: "
 if not defined SS_DIR set "SS_DIR=C:\SysSpecter"
 if "!SS_DIR:~-1!" == "\" set "SS_DIR=!SS_DIR:~0,-1!"
+exit /b 0
+
+
+rem ============================================================
+rem  Uninstall entry point
+rem ============================================================
+:uninstall
+title SysSpecter - Uninstaller
+echo ============================================================
+echo   SysSpecter Uninstaller
+echo ============================================================
+echo.
+set "HERE=%~dp0"
+if "%HERE:~-1%" == "\" set "HERE=%HERE:~0,-1%"
+
+if not exist "%HERE%\sysspecter.py" (
+    echo [ERROR] This does not look like a SysSpecter folder:
+    echo   %HERE%
+    pause
+    exit /b 1
+)
+
+echo SysSpecter folder: %HERE%
+echo.
+echo This will delete the following items from the folder:
+echo   - .venv\  (virtual environment)
+echo   - build\  (PyInstaller intermediates)
+echo   - dist\   (the packaged EXE + artefacts)
+echo.
+echo Source files (sysspecter.py, sysspecter\, assets\, docs) are KEPT.
+echo.
+set /p "CONFIRM=Continue? [y/N]: "
+if /i not "!CONFIRM!"=="y" (
+    echo Aborted.
+    pause
+    exit /b 0
+)
+
+if exist "%HERE%\.venv"  rmdir /S /Q "%HERE%\.venv"
+if exist "%HERE%\build"  rmdir /S /Q "%HERE%\build"
+if exist "%HERE%\dist"   rmdir /S /Q "%HERE%\dist"
+
+echo.
+echo Uninstall complete. Reports under %%TEMP%%\SysSpecter (or your
+echo custom output-root) were NOT touched -- delete them manually if
+echo you want to reclaim the space.
+echo.
+pause
 exit /b 0

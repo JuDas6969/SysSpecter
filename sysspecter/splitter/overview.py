@@ -37,6 +37,7 @@ def _phase_bar_svg(
     total_duration: float,
     phases: list[Phase],
     change_points: list[ChangePoint],
+    phase_links: list[str | None] | None = None,
     width: int = 900,
     height: int = 70,
 ) -> str:
@@ -61,16 +62,28 @@ def _phase_bar_svg(
         x0 = _x(p.start_rel)
         x1 = _x(p.end_rel)
         color = _PHASE_COLORS[i % len(_PHASE_COLORS)]
+        link = phase_links[i] if (phase_links and i < len(phase_links)) else None
+        if link:
+            # Anchor-wrap the segment so clicking it jumps to the sub-report.
+            parts.append(
+                f'<a href="{html.escape(link)}" target="_blank" '
+                f'><title>Phase {p.phase_id} — open sub-report</title>'
+            )
+        else:
+            parts.append(f'<g><title>Phase {p.phase_id}</title>')
         parts.append(
             f'<rect x="{x0:.1f}" y="{bar_y}" width="{max(x1-x0,1):.1f}" height="{bar_h}" '
-            f'fill="{color}" fill-opacity="0.70" stroke="#fff" stroke-width="1" />'
+            f'fill="{color}" fill-opacity="0.70" stroke="#fff" stroke-width="1" '
+            f'style="cursor: {"pointer" if link else "default"}" />'
         )
         label = f"#{p.phase_id}"
         text_x = (x0 + x1) / 2
         parts.append(
             f'<text x="{text_x:.1f}" y="{bar_y + bar_h / 2 + 4:.1f}" '
-            f'text-anchor="middle" fill="#fff" font-weight="bold">{label}</text>'
+            f'text-anchor="middle" fill="#fff" font-weight="bold" '
+            f'style="pointer-events: none">{label}</text>'
         )
+        parts.append("</a>" if link else "</g>")
 
     for c in change_points:
         x = _x(c.rel_seconds)
@@ -118,7 +131,10 @@ def build_overview_report(
         title="Run intensity - full timeline",
         y_label="%", y_min=0, y_max=100,
     )
-    phase_bar = _phase_bar_svg(total_duration, phases, change_points)
+    # Each SVG phase rectangle becomes a link to its sub-report (if any).
+    phase_links = [p.get("subreport_path") for p in phase_reports]
+    phase_bar = _phase_bar_svg(total_duration, phases, change_points,
+                               phase_links=phase_links)
 
     rows: list[str] = []
     for i, p in enumerate(phase_reports):
