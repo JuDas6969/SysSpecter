@@ -69,7 +69,9 @@ if errorlevel 1 (
   echo  Skipping SBOM: cyclonedx-bom not installed -- run "pip install -r requirements-dev.txt" first.
 ) else (
   echo  Generating CycloneDX SBOM ...
-  "%PY%" -m cyclonedx_py requirements -i "%HERE%requirements.txt" -o "%HERE%dist\SysSpecter.sbom.json" --output-format JSON
+  REM `environment` mode inspects the venv so the SBOM reflects what is
+  REM actually bundled (includes transitive deps, not just top-level pins).
+  "%PY%" -m cyclonedx_py environment -o "%HERE%dist\SysSpecter.sbom.json" --output-format JSON
   if errorlevel 1 (
     echo  WARNING: SBOM generation failed.
   ) else (
