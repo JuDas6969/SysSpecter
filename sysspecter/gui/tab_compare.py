@@ -54,22 +54,22 @@ class CompareTab(ttk.Frame):
         self.rowconfigure(6, weight=1)
 
         top = ttk.Frame(self)
-        top.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         top.columnconfigure(1, weight=1)
         lbl = ttk.Label(top, text="Output root:")
-        lbl.grid(row=0, column=0, sticky="w")
+        lbl.grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
         tooltip(lbl, _TT_OUTPUT)
         ent = ttk.Entry(top, textvariable=self._output_root_var)
-        ent.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        ent.grid(row=0, column=1, sticky="ew", padx=(0, 6), pady=4)
         tooltip(ent, _TT_OUTPUT)
         btn_ref = ttk.Button(top, text="Refresh", command=self.refresh)
-        btn_ref.grid(row=0, column=2)
+        btn_ref.grid(row=0, column=2, pady=4)
         tooltip(btn_ref, _TT_REFRESH)
 
         help_lbl = ttk.Label(self, foreground="#555",
                              text="Select 2+ runs (Ctrl/Shift-click), then 'Start compare'. "
                                   "Mode is auto-detected from hostnames.")
-        help_lbl.grid(row=1, column=0, sticky="w", pady=(0, 6))
+        help_lbl.grid(row=1, column=0, sticky="w", pady=(0, 8))
 
         self.table = RunsTable(self, selectmode="extended")
         self.table.grid(row=2, column=0, sticky="nsew")

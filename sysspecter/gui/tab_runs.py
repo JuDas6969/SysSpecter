@@ -70,13 +70,13 @@ class RunsTab(ttk.Frame):
         top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         top.columnconfigure(1, weight=1)
         lbl = ttk.Label(top, text="Output root:")
-        lbl.grid(row=0, column=0, sticky="w")
+        lbl.grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
         tooltip(lbl, _TT["output_root"])
         ent = ttk.Entry(top, textvariable=self._output_root_var)
-        ent.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        ent.grid(row=0, column=1, sticky="ew", padx=(0, 6), pady=4)
         tooltip(ent, _TT["output_root"])
         btn_refresh = ttk.Button(top, text="Refresh", command=self.refresh)
-        btn_refresh.grid(row=0, column=2)
+        btn_refresh.grid(row=0, column=2, pady=4)
         tooltip(btn_refresh, _TT["refresh"])
 
         # Filter toolbar (hostname / tag / substring)
@@ -102,22 +102,30 @@ class RunsTab(ttk.Frame):
         self.table.grid(row=2, column=0, sticky="nsew")
         self.table.bind_double_click(lambda p: self._open_report(p))
 
+        # Action buttons — split onto two rows so Archive / Delete are not
+        # clipped on narrower windows (960 px minimum).
         actions = ttk.Frame(self)
         actions.grid(row=3, column=0, sticky="ew", pady=(8, 8))
-        defs = [
+        defs_row_1 = [
             ("Open report", self._action_open_report, _TT["open_report"]),
             ("Open folder", self._action_open_folder, _TT["open_folder"]),
             ("Rebuild", self._action_rebuild, _TT["rebuild"]),
             ("Rebuild (trim…)", self._action_trim, _TT["trim"]),
             ("Split", self._action_split, _TT["split"]),
+        ]
+        defs_row_2 = [
             ("Sanitize", self._action_sanitize, _TT["sanitize"]),
             ("Inspect", self._action_inspect, _TT["inspect"]),
             ("Archive ZIP", self._action_archive, _TT["archive"]),
             ("Delete", self._action_delete, _TT["delete"]),
         ]
-        for col, (label, cmd, tip) in enumerate(defs):
+        for col, (label, cmd, tip) in enumerate(defs_row_1):
             btn = ttk.Button(actions, text=label, command=cmd)
-            btn.grid(row=0, column=col, padx=(0, 6))
+            btn.grid(row=0, column=col, padx=(0, 6), pady=(0, 4), sticky="w")
+            tooltip(btn, tip)
+        for col, (label, cmd, tip) in enumerate(defs_row_2):
+            btn = ttk.Button(actions, text=label, command=cmd)
+            btn.grid(row=1, column=col, padx=(0, 6), sticky="w")
             tooltip(btn, tip)
 
         ttk.Label(self, text="Command output:").grid(row=4, column=0, sticky="w",
