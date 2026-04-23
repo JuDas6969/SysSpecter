@@ -43,8 +43,12 @@ def _resource_path(*parts: str) -> str:
 
 @lru_cache(maxsize=1)
 def _load_css() -> str:
+    from ..theme import css_root_variables
     with open(_resource_path("styles", "report.css"), encoding="utf-8") as f:
-        return f.read()
+        body = f.read()
+    # Prepend :root variables so the CSS below can reference tokens even if
+    # the hand-written rules still use hex literals today.
+    return css_root_variables() + "\n" + body
 
 
 @lru_cache(maxsize=1)

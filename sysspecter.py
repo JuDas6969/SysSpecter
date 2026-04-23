@@ -311,18 +311,45 @@ def _cmd_gui(args: argparse.Namespace) -> int:
 
 
 def _cmd_sanitize(args: argparse.Namespace) -> int:
+    import json
+
     from sysspecter.sanitizer import sanitize_run
+    from sysspecter.sanitizer_verify import verify
 
     run = os.path.abspath(args.run)
     if not os.path.isdir(run):
         print(f"error: not a directory: {run}", file=sys.stderr)
         return 2
+
+    # Snapshot the originals BEFORE writing the sanitized copy so verify can
+    # look for the real pre-redaction identifiers.
+    try:
+        with open(os.path.join(run, "manifest.json"), encoding="utf-8") as f:
+            orig_manifest = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        orig_manifest = {}
+    try:
+        with open(os.path.join(run, "static_snapshot.json"), encoding="utf-8") as f:
+            orig_static = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        orig_static = {}
+
     out = sanitize_run(run, args.out)
+    hits = verify(out, original_manifest=orig_manifest,
+                  original_static=orig_static)
     print("============================================================")
     print(" Sanitized copy written")
     print("============================================================")
     print(f" Source: {run}")
     print(f" Output: {out}")
+    if hits:
+        print(f" WARNING: verifier found {len(hits)} potential leaks:")
+        for hit in hits[:10]:
+            print(f"   - {hit.file} @ {hit.location}: {hit.snippet[:80]}")
+        if len(hits) > 10:
+            print(f"   ... and {len(hits) - 10} more.")
+    else:
+        print(" Verify OK: no known identifier present in the sanitized copy.")
     print("============================================================")
     return 0
 

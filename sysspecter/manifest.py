@@ -25,7 +25,7 @@ def is_admin() -> bool:
 
 def build_run_manifest(paths: RunPaths, config: Config) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "sysspecter_version": _SS_VERSION,
         "run_id": paths.run_id,
         "hostname": paths.hostname,

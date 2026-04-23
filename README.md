@@ -13,6 +13,20 @@ It does not just dump counters — it detects anomalies, slowdown windows,
 resource leaks, ranks offenders across multiple axes, classifies bottlenecks,
 and produces a self-contained HTML report plus machine-readable artifacts.
 
+## Quick start (60 seconds)
+
+1. **Run `install.bat`** — picks up Python 3.12/3.13/3.14, builds the
+   venv, installs pinned deps. Safe to re-run.
+2. **Double-click `sysspecter-gui.bat`** — the GUI opens on the Monitor
+   tab.
+3. **Click "Start monitor"**. Let it run for the time you need, then
+   click **Stop**. Finalisation runs automatically.
+4. **Switch to the Runs tab** and double-click your run — the HTML
+   report opens in your browser.
+
+Portable alternative: build once with `build_exe.bat`, copy
+`dist\SysSpecter.exe` to a USB stick, double-click it anywhere.
+
 ## Install
 
 Requires Windows 10 / 11 and Python 3.12 or 3.14 (either works on current wheels).

@@ -9,9 +9,12 @@ import traceback
 from tkinter import messagebox, ttk
 
 from ..config import DEFAULT_OUTPUT_ROOT
+from .components.status_bar import StatusBar
+from .components.toast import ToastService
 from .tab_compare import CompareTab
 from .tab_monitor import MonitorTab
 from .tab_runs import RunsTab
+from .theme import apply_theme
 
 _ABOUT_TEXT = (
     "SysSpecter — See everything. Find the cause.\n"
@@ -72,18 +75,17 @@ class App:
         self.root.geometry("1180x780")
         self.root.minsize(960, 640)
 
-        try:
-            ttk.Style().theme_use(
-                "vista" if self.root.tk.call("tk", "windowingsystem") == "win32" else "clam"
-            )
-        except tk.TclError:
-            pass
+        # Apply the shared ttk theme (colors, typography, primary/danger variants).
+        apply_theme(self.root)
 
         self._output_root = output_root
         self._assets = _assets_dir()
         self._images: list[tk.PhotoImage] = []  # keep refs alive
 
         self._apply_window_icon()
+
+        # Toast service is app-wide, one instance on the root.
+        self.toasts = ToastService(self.root)
 
         header = ttk.Frame(self.root, padding=(12, 8))
         header.pack(fill="x")
@@ -113,13 +115,11 @@ class App:
         self.notebook.add(about, text="About")
         self._build_about_tab(about)
 
-        footer = ttk.Frame(self.root, padding=(12, 4))
-        footer.pack(fill="x", side="bottom")
-        ttk.Label(
-            footer,
-            text="© 2026 David Juriga — SysSpecter",
-            foreground="#6b7a99", font=("Segoe UI", 8),
-        ).pack(side="right")
+        # Proper status bar replaces the copyright-only footer.
+        self.status_bar = StatusBar(
+            self.root, get_output_root=lambda: self._output_root,
+        )
+        self.status_bar.pack(fill="x", side="bottom")
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         # Route unhandled Tk callback exceptions into a user-visible dialog.
@@ -198,6 +198,35 @@ class App:
         txt.configure(state="disabled")
         txt.pack(fill="both", expand=True)
 
+        # Update-check status label, filled asynchronously.
+        self._update_label_var = tk.StringVar(value="Checking for updates…")
+        ttk.Label(parent, textvariable=self._update_label_var,
+                  foreground="#6b7a99").pack(pady=(8, 0))
+        self._kick_off_update_check()
+
+    def _kick_off_update_check(self) -> None:
+        import threading
+
+        def _run() -> None:
+            try:
+                from ..updater.check import check_for_updates
+                info = check_for_updates()
+            except Exception:
+                info = None
+            if info is None:
+                text = "Update check: offline or GitHub unreachable."
+            elif info.update_available:
+                text = (f"A newer version is available: v{info.current} -> "
+                        f"{info.latest}.")
+            else:
+                text = f"SysSpecter v{info.current} (up to date)."
+            try:
+                self.root.after(0, self._update_label_var.set, text)
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
+
     # --------------------------------------------------------------- runtime
     def _on_run_finished(self) -> None:
         try:
@@ -261,13 +290,25 @@ class App:
     def _on_tk_exception(self, exc_type, exc_value, exc_tb) -> None:
         tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
         short = f"{exc_type.__name__}: {exc_value}"
+        # Dump a crash report next to the output root so the user can ship it.
+        crash_path: str | None = None
         try:
-            messagebox.showerror(
-                "SysSpecter — unexpected error",
-                f"{short}\n\nFull traceback has been printed to the launching "
-                f"console. If you can reproduce this, please send the traceback "
-                f"to the maintainer.\n\n{tb.splitlines()[-1] if tb.splitlines() else ''}",
+            from ..telemetry.crash_reporter import write_crash_report
+            try:
+                idx = self.notebook.index(self.notebook.select())
+            except tk.TclError:
+                idx = -1
+            crash_path = write_crash_report(
+                self._output_root, exc_type, exc_value, exc_tb,
+                extra={"active_tab_index": idx},
             )
+        except Exception:
+            crash_path = None
+        try:
+            msg = f"{short}\n\n{tb.splitlines()[-1] if tb.splitlines() else ''}"
+            if crash_path:
+                msg += f"\n\nFull crash report:\n{crash_path}"
+            messagebox.showerror("SysSpecter — unexpected error", msg)
         except Exception:
             pass
         # also dump to stderr so users launching via sysspecter.bat gui see it
