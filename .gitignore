@@ -29,6 +29,11 @@ dist/
 # Generated ICO (produced from assets/icon.png at build time)
 assets/icon.ico
 
+# Coverage artefacts
+.coverage
+coverage.xml
+htmlcov/
+
 # OS
 Thumbs.db
 Desktop.ini
