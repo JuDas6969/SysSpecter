@@ -5,9 +5,10 @@ pyinstaller==6.20.0
 Pillow==12.2.0
 
 # Quality + security tooling (used by CI + optionally by the dev).
-pytest>=8.0
-pytest-cov>=5.0
-ruff>=0.6
-pip-audit>=2.7
-bandit>=1.7
-cyclonedx-bom>=4.5
+# Pinned exactly so CI is deterministic; bump intentionally via dependabot.
+pytest==9.0.3
+pytest-cov==7.1.0
+ruff==0.15.11
+pip-audit==2.10.0
+bandit==1.9.4
+cyclonedx-bom==7.3.0

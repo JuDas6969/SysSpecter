@@ -62,7 +62,10 @@ sysspecter = ["py.typed"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not e2e'"
+markers = [
+    "e2e: end-to-end tests that spawn the full CLI (slow, ~30 s each)",
+]
 
 [tool.ruff]
 line-length = 110

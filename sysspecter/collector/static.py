@@ -85,6 +85,8 @@ def _cpu(logger: logging.Logger | None) -> dict[str, Any]:
         freq = psutil.cpu_freq()
         freq_info = {"current_mhz": freq.current, "min_mhz": freq.min, "max_mhz": freq.max} if freq else {}
     except Exception:
+        if logger:
+            logger.debug("cpu_freq unavailable", exc_info=True)
         freq_info = {}
     return {
         "cpus": data,

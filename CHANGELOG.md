@@ -6,6 +6,38 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **SECURITY.md** with CVE reporting process + disclosure policy.
+- **CONTRIBUTING.md** with quick-start, coding guidelines, and release
+  instructions for new contributors.
+- **Pre-commit config** (`.pre-commit-config.yaml`) — Ruff, Bandit, and
+  a handful of file-hygiene hooks run on every commit.
+- **End-to-end smoke test** (`tests/test_e2e_monitor.py`) — spawns the
+  real CLI, runs a 5-second monitor, asserts artefacts + manifest are
+  valid. Gated behind `pytest -m e2e` so it does not slow the unit pass.
+- **Collector safety-net tests** — `tests/test_winutil.py` (powershell
+  wrapper failure modes), `tests/test_collector_system_sampler.py`
+  (sampler schema + rate math + psutil fall-backs), `tests/test_manifest.py`
+  (build / end-update / degradation records).
+- **Typography hierarchy** in the ttk theme (`H1 / H2 / H3 / Muted`
+  label styles) so section headers render at the right weight.
+- **Keyboard focus indicator** on buttons — 2-px brand-cyan outline when
+  a widget has keyboard focus, finally usable with Tab-navigation.
+- **Progressive disclosure** in the Monitor tab — target / PID / path /
+  tags / latency fields are hidden behind a "Show advanced options"
+  toggle. First-time users see 3 fields (Mode / Duration / Output)
+  instead of 12.
+
+### Changed
+- **Silent `except Exception: pass`-Blöcke** audited: 48 total, 16
+  classified as real diagnostic failures and given a `_log.warning` /
+  `_log.debug` call with `exc_info=True`. The remaining 32 are
+  legitimate Tk-shutdown / optional-feature probes and kept silent.
+- **Dev-dependency pinning** — `requirements-dev.txt` now pins every
+  tool exactly (`pytest==9.0.3`, `ruff==0.15.11`, …) so CI never breaks
+  on a surprise upstream release.
+
+
 ## [1.0.0] — 2026-04-23
 
 First production-ready release. Portable single-file EXE, Tkinter GUI,

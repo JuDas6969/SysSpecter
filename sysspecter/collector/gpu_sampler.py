@@ -25,6 +25,10 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from ..logging_setup import get_logger
+
+_log = get_logger(__name__)
+
 CREATE_NO_WINDOW = 0x08000000
 
 _PS_FLAGS = [
@@ -84,6 +88,7 @@ def _run_ps(script: str, timeout: float = 15.0) -> str | None:
             creationflags=CREATE_NO_WINDOW,
         )
     except Exception:
+        _log.warning("gpu PowerShell subprocess failed", exc_info=True)
         return None
     return (proc.stdout or "").strip() or None
 

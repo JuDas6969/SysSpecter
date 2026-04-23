@@ -21,6 +21,10 @@ import re
 import shutil
 from typing import Any
 
+from .logging_setup import get_logger
+
+_log = get_logger(__name__)
+
 _REDACTED = "[REDACTED]"
 
 
@@ -198,7 +202,7 @@ def sanitize_run(run_dir: str, out_dir: str | None = None) -> str:
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(m, f, indent=2)
     except (OSError, json.JSONDecodeError):
-        pass
+        _log.warning("could not rewrite manifest during sanitize", exc_info=True)
 
     # Rebuild the report so the HTML/MD reflect the redacted data.
     try:
@@ -206,6 +210,7 @@ def sanitize_run(run_dir: str, out_dir: str | None = None) -> str:
         build_report(out_dir)
     except Exception:
         # If the re-render fails, the caller still has a redacted folder.
-        pass
+        _log.warning("post-sanitize report rebuild failed — "
+                     "redacted folder still usable", exc_info=True)
 
     return out_dir

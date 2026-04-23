@@ -31,13 +31,25 @@ def apply_theme(root: tk.Misc) -> None:
     base_font = (TYPOGRAPHY.family, TYPOGRAPHY.size_body)
     bold_font = (TYPOGRAPHY.family, TYPOGRAPHY.size_body, "bold")
 
+    # Typography hierarchy so H1/H2/H3 are readable at a glance.
+    style.configure("H1.TLabel", font=(TYPOGRAPHY.family, 16, "bold"),
+                    foreground=COLORS.fg_primary)
+    style.configure("H2.TLabel", font=(TYPOGRAPHY.family, 13, "bold"),
+                    foreground=COLORS.fg_primary)
+    style.configure("H3.TLabel", font=(TYPOGRAPHY.family, 11, "bold"),
+                    foreground=COLORS.fg_body)
+    style.configure("Muted.TLabel", font=base_font, foreground=COLORS.fg_muted)
+
     # Core widgets
     style.configure("TLabel", font=base_font, foreground=COLORS.fg_body)
     style.configure("TFrame", background=COLORS.bg_app)
     style.configure("TButton", padding=(12, 6), font=base_font)
     style.map(
         "TButton",
-        foreground=[("disabled", COLORS.fg_muted)],
+        foreground=[("disabled", COLORS.fg_muted),
+                    ("focus", COLORS.brand_indigo)],
+        # Visible focus outline for keyboard navigation.
+        focuscolor=[("focus", COLORS.brand_cyan)],
     )
 
     # Primary button — used for Start Monitor, Start Compare, Apply

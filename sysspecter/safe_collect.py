@@ -80,8 +80,10 @@ def safe_collect(
                         from .manifest import mark_degraded
                         mark_degraded(mp, name, f"{type(exc).__name__}: {exc}")
                     except Exception:
-                        # never let degradation bookkeeping break the collector
-                        pass
+                        # never let degradation bookkeeping break the collector,
+                        # but do leave a trace
+                        logger.debug("mark_degraded failed for %s", name,
+                                     exc_info=True)
                 if callable(fallback):
                     return fallback()  # type: ignore[return-value]
                 return fallback  # type: ignore[return-value]

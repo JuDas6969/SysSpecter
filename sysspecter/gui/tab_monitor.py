@@ -209,50 +209,12 @@ class MonitorTab(ttk.Frame):
         tooltip(manual_cb, _TT_MANUAL)
         self._refresh_preview()
 
-        # --- Targets
-        tn_lbl = ttk.Label(form, text="Target name:")
-        tn_lbl.grid(row=2, column=0, sticky="w", pady=2)
-        tooltip(tn_lbl, _TT_TARGET_NAME)
-        tn_entry = ttk.Entry(form, textvariable=self._target_name)
-        tn_entry.grid(row=2, column=1, sticky="ew", pady=2)
-        tooltip(tn_entry, _TT_TARGET_NAME)
-
-        tp_lbl = ttk.Label(form, text="Target PID:")
-        tp_lbl.grid(row=3, column=0, sticky="w", pady=2)
-        tooltip(tp_lbl, _TT_TARGET_PID)
-        tp_entry = ttk.Entry(form, textvariable=self._target_pid, width=10)
-        tp_entry.grid(row=3, column=1, sticky="w", pady=2)
-        tooltip(tp_entry, _TT_TARGET_PID)
-
-        tpath_lbl = ttk.Label(form, text="Target path:")
-        tpath_lbl.grid(row=4, column=0, sticky="w", pady=2)
-        tooltip(tpath_lbl, _TT_TARGET_PATH)
-        tpath_entry = ttk.Entry(form, textvariable=self._target_path)
-        tpath_entry.grid(row=4, column=1, sticky="ew", pady=2)
-        tooltip(tpath_entry, _TT_TARGET_PATH)
-
-        # --- Tags
-        tag_lbl = ttk.Label(form, text="Tags (comma-separated):")
-        tag_lbl.grid(row=5, column=0, sticky="w", pady=2)
-        tooltip(tag_lbl, _TT_TAGS)
-        tag_entry = ttk.Entry(form, textvariable=self._tags)
-        tag_entry.grid(row=5, column=1, sticky="ew", pady=2)
-        tooltip(tag_entry, _TT_TAGS)
-
-        # --- Latency
-        lat_lbl = ttk.Label(form, text="Latency targets:")
-        lat_lbl.grid(row=6, column=0, sticky="w", pady=2)
-        tooltip(lat_lbl, _TT_LAT)
-        lat_entry = ttk.Entry(form, textvariable=self._latency_targets)
-        lat_entry.grid(row=6, column=1, sticky="ew", pady=2)
-        tooltip(lat_entry, _TT_LAT)
-
-        # --- Output root
+        # --- Output root (always visible — Basic row 2)
         out_lbl = ttk.Label(form, text="Output root:")
-        out_lbl.grid(row=7, column=0, sticky="w", pady=2)
+        out_lbl.grid(row=2, column=0, sticky="w", pady=2)
         tooltip(out_lbl, _TT_OUTPUT)
         out_frame = ttk.Frame(form)
-        out_frame.grid(row=7, column=1, sticky="ew", pady=2)
+        out_frame.grid(row=2, column=1, sticky="ew", pady=2)
         out_frame.columnconfigure(0, weight=1)
         out_entry = ttk.Entry(out_frame, textvariable=self._output_root)
         out_entry.grid(row=0, column=0, sticky="ew")
@@ -260,6 +222,58 @@ class MonitorTab(ttk.Frame):
         browse_btn = ttk.Button(out_frame, text="Browse...", command=self._pick_output)
         browse_btn.grid(row=0, column=1, padx=(6, 0))
         tooltip(browse_btn, "Pick a different folder to store this session's artifacts.")
+
+        # --- Advanced (collapsed by default). Uses a disclosure-toggle
+        # pattern: a single Checkbutton flips a frame visible/invisible
+        # via grid_remove so the 4 advanced fields don't overwhelm the
+        # first-time user.
+        self._advanced_open = tk.BooleanVar(value=False)
+        adv_toggle = ttk.Checkbutton(
+            form, text="Show advanced options (target, tags, latency)",
+            variable=self._advanced_open,
+            command=self._toggle_advanced,
+        )
+        adv_toggle.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 2))
+
+        self._advanced_frame = ttk.Frame(form)
+        self._advanced_frame.grid(row=4, column=0, columnspan=2, sticky="ew")
+        self._advanced_frame.columnconfigure(1, weight=1)
+        self._advanced_frame.grid_remove()
+
+        tn_lbl = ttk.Label(self._advanced_frame, text="Target name:")
+        tn_lbl.grid(row=0, column=0, sticky="w", pady=2)
+        tooltip(tn_lbl, _TT_TARGET_NAME)
+        tn_entry = ttk.Entry(self._advanced_frame, textvariable=self._target_name)
+        tn_entry.grid(row=0, column=1, sticky="ew", pady=2)
+        tooltip(tn_entry, _TT_TARGET_NAME)
+
+        tp_lbl = ttk.Label(self._advanced_frame, text="Target PID:")
+        tp_lbl.grid(row=1, column=0, sticky="w", pady=2)
+        tooltip(tp_lbl, _TT_TARGET_PID)
+        tp_entry = ttk.Entry(self._advanced_frame, textvariable=self._target_pid, width=10)
+        tp_entry.grid(row=1, column=1, sticky="w", pady=2)
+        tooltip(tp_entry, _TT_TARGET_PID)
+
+        tpath_lbl = ttk.Label(self._advanced_frame, text="Target path:")
+        tpath_lbl.grid(row=2, column=0, sticky="w", pady=2)
+        tooltip(tpath_lbl, _TT_TARGET_PATH)
+        tpath_entry = ttk.Entry(self._advanced_frame, textvariable=self._target_path)
+        tpath_entry.grid(row=2, column=1, sticky="ew", pady=2)
+        tooltip(tpath_entry, _TT_TARGET_PATH)
+
+        tag_lbl = ttk.Label(self._advanced_frame, text="Tags (comma-separated):")
+        tag_lbl.grid(row=3, column=0, sticky="w", pady=2)
+        tooltip(tag_lbl, _TT_TAGS)
+        tag_entry = ttk.Entry(self._advanced_frame, textvariable=self._tags)
+        tag_entry.grid(row=3, column=1, sticky="ew", pady=2)
+        tooltip(tag_entry, _TT_TAGS)
+
+        lat_lbl = ttk.Label(self._advanced_frame, text="Latency targets:")
+        lat_lbl.grid(row=4, column=0, sticky="w", pady=2)
+        tooltip(lat_lbl, _TT_LAT)
+        lat_entry = ttk.Entry(self._advanced_frame, textvariable=self._latency_targets)
+        lat_entry.grid(row=4, column=1, sticky="ew", pady=2)
+        tooltip(lat_entry, _TT_LAT)
 
         # --- Phase 3
         p3 = ttk.LabelFrame(self, text="Phase 3 optional collectors", padding=8)
@@ -378,6 +392,13 @@ class MonitorTab(ttk.Frame):
         self._enable_gpu.set(True)
         self._enable_eventlog.set(True)
         self._enable_etw.set(True)
+
+    def _toggle_advanced(self) -> None:
+        """Show or hide the advanced-options frame."""
+        if self._advanced_open.get():
+            self._advanced_frame.grid()
+        else:
+            self._advanced_frame.grid_remove()
 
     def _build_args(self) -> list[str] | None:
         args = ["monitor", "--mode", self._mode.get()]

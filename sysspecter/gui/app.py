@@ -9,6 +9,7 @@ import traceback
 from tkinter import messagebox, ttk
 
 from ..config import DEFAULT_OUTPUT_ROOT
+from ..logging_setup import get_logger
 from ..settings import UserPrefs, load_prefs
 from .components.status_bar import StatusBar
 from .components.toast import ToastService
@@ -18,6 +19,8 @@ from .tab_monitor import MonitorTab
 from .tab_runs import RunsTab
 from .tab_settings import SettingsTab
 from .theme import apply_theme
+
+_log = get_logger(__name__)
 
 _ABOUT_TEXT = (
     "SysSpecter — See everything. Find the cause.\n"
@@ -296,7 +299,7 @@ class App:
             self.compare_tab.refresh()
             self.history_tab.refresh()
         except Exception:
-            pass
+            _log.debug("post-run refresh failed", exc_info=True)
 
     def _on_settings_saved(self, prefs: UserPrefs) -> None:
         """Called by SettingsTab after a successful save. Apply what we can
@@ -309,11 +312,11 @@ class App:
             self.runs_tab.refresh()
             self.compare_tab.refresh()
         except Exception:
-            pass
+            _log.debug("post-settings refresh failed", exc_info=True)
         try:
             self.toasts.show("Settings saved.", kind="success")
         except Exception:
-            pass
+            _log.debug("toast show failed", exc_info=True)
 
     def _active_subprocesses(self) -> list[str]:
         """Return a short description of any still-running child subprocesses."""
@@ -383,6 +386,7 @@ class App:
                 extra={"active_tab_index": idx},
             )
         except Exception:
+            _log.debug("crash-report write failed", exc_info=True)
             crash_path = None
         try:
             msg = f"{short}\n\n{tb.splitlines()[-1] if tb.splitlines() else ''}"

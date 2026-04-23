@@ -8,6 +8,10 @@ from typing import Any
 
 import psutil
 
+from ..logging_setup import get_logger
+
+_log = get_logger(__name__)
+
 _last_disk: dict[str, Any] | None = None
 _last_net: dict[str, Any] | None = None
 _last_ts: float | None = None
@@ -55,6 +59,7 @@ def _cpu_stats_rates() -> tuple[float | None, float | None]:
     try:
         st = psutil.cpu_stats()
     except Exception:
+        _log.debug("cpu_stats unavailable", exc_info=True)
         return None, None
     now = time.monotonic()
     if _last_cpu_stats is None:
@@ -73,6 +78,7 @@ def _freq_mhz() -> float | None:
         f = psutil.cpu_freq()
         return float(f.current) if f else None
     except Exception:
+        _log.debug("cpu_freq unavailable", exc_info=True)
         return None
 
 
@@ -80,6 +86,7 @@ def _disk_totals() -> tuple[float, float, float, float, int, int]:
     try:
         io = psutil.disk_io_counters()
     except Exception:
+        _log.debug("disk_io_counters unavailable", exc_info=True)
         return 0.0, 0.0, 0.0, 0.0, 0, 0
     if io is None:
         return 0.0, 0.0, 0.0, 0.0, 0, 0
@@ -95,6 +102,7 @@ def _net_totals() -> dict[str, float]:
     try:
         n = psutil.net_io_counters()
     except Exception:
+        _log.debug("net_io_counters unavailable", exc_info=True)
         return {}
     if n is None:
         return {}
