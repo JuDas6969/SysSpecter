@@ -1,0 +1,45 @@
+{
+  "anomalies": [],
+  "apps": {},
+  "bottlenecks": {
+    "primary": null,
+    "reasons": {},
+    "scores": {},
+    "secondary_bottlenecks": []
+  },
+  "etw_disk": {
+    "enabled": false
+  },
+  "event_correlation": {
+    "enabled": false
+  },
+  "gpu_analysis": {
+    "enabled": false
+  },
+  "latency_analysis": {
+    "samples": 0,
+    "targets": []
+  },
+  "leaks": {
+    "handles": [],
+    "memory": [],
+    "threads": []
+  },
+  "network_attribution": {
+    "by_app": [],
+    "by_pid": [],
+    "samples": 0
+  },
+  "offenders": {},
+  "process_churn": {
+    "total_process_starts": 0
+  },
+  "slowdowns": [],
+  "summary": {
+    "primary_bottleneck": null,
+    "total_anomalies": 0,
+    "total_leak_candidates": 0,
+    "total_slowdown_windows": 0,
+    "verdict": "System behaved normally during the reference run."
+  }
+}

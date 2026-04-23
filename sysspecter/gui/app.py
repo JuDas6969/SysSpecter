@@ -9,11 +9,13 @@ import traceback
 from tkinter import messagebox, ttk
 
 from ..config import DEFAULT_OUTPUT_ROOT
+from ..settings import UserPrefs, load_prefs
 from .components.status_bar import StatusBar
 from .components.toast import ToastService
 from .tab_compare import CompareTab
 from .tab_monitor import MonitorTab
 from .tab_runs import RunsTab
+from .tab_settings import SettingsTab
 from .theme import apply_theme
 
 _ABOUT_TEXT = (
@@ -78,6 +80,12 @@ class App:
         # Apply the shared ttk theme (colors, typography, primary/danger variants).
         apply_theme(self.root)
 
+        # Persistent user preferences. If the user has pinned an
+        # output-root in settings, that beats the CLI default.
+        self._prefs: UserPrefs = load_prefs()
+        if self._prefs.output_root_mru:
+            output_root = self._prefs.output_root_mru[0]
+
         self._output_root = output_root
         self._assets = _assets_dir()
         self._images: list[tk.PhotoImage] = []  # keep refs alive
@@ -107,9 +115,15 @@ class App:
             get_output_root=lambda: self._output_root,
         )
 
+        self.settings_tab = SettingsTab(
+            self.notebook, prefs=self._prefs,
+            on_saved=self._on_settings_saved,
+        )
+
         self.notebook.add(self.monitor_tab, text="Monitor")
         self.notebook.add(self.runs_tab, text="Runs")
         self.notebook.add(self.compare_tab, text="Compare")
+        self.notebook.add(self.settings_tab, text="Settings")
 
         about = ttk.Frame(self.notebook, padding=16)
         self.notebook.add(about, text="About")
@@ -147,7 +161,8 @@ class App:
     def _current_tab_widget(self) -> ttk.Frame | None:
         try:
             idx = self.notebook.index(self.notebook.select())
-            tabs = (self.monitor_tab, self.runs_tab, self.compare_tab, None)
+            tabs = (self.monitor_tab, self.runs_tab, self.compare_tab,
+                    self.settings_tab, None)
             return tabs[idx] if 0 <= idx < len(tabs) else None
         except tk.TclError:
             return None
@@ -198,11 +213,16 @@ class App:
         txt.configure(state="disabled")
         txt.pack(fill="both", expand=True)
 
-        # Update-check status label, filled asynchronously.
-        self._update_label_var = tk.StringVar(value="Checking for updates…")
+        # Update-check status label, filled asynchronously. Only runs
+        # when the user opted in via Settings.
+        self._update_label_var = tk.StringVar(
+            value=("Checking for updates…" if self._prefs.check_updates_on_start
+                   else "Update check disabled in Settings."),
+        )
         ttk.Label(parent, textvariable=self._update_label_var,
                   foreground="#6b7a99").pack(pady=(8, 0))
-        self._kick_off_update_check()
+        if self._prefs.check_updates_on_start:
+            self._kick_off_update_check()
 
     def _kick_off_update_check(self) -> None:
         import threading
@@ -232,6 +252,23 @@ class App:
         try:
             self.runs_tab.refresh()
             self.compare_tab.refresh()
+        except Exception:
+            pass
+
+    def _on_settings_saved(self, prefs: UserPrefs) -> None:
+        """Called by SettingsTab after a successful save. Apply what we can
+        live (output root + status bar refresh) and toast the user."""
+        self._prefs = prefs
+        if prefs.output_root_mru:
+            self._output_root = prefs.output_root_mru[0]
+        try:
+            self.status_bar.refresh_context()
+            self.runs_tab.refresh()
+            self.compare_tab.refresh()
+        except Exception:
+            pass
+        try:
+            self.toasts.show("Settings saved.", kind="success")
         except Exception:
             pass
 

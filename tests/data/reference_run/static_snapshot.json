@@ -1,0 +1,45 @@
+{
+  "autoruns": [],
+  "bios": {
+    "ReleaseDate": "2024-01-01",
+    "SMBIOSBIOSVersion": "1.0"
+  },
+  "computer_system": {
+    "Manufacturer": "Reference, Inc.",
+    "Model": "RefBook"
+  },
+  "cpu": {
+    "cpus": [
+      {
+        "Name": "Reference CPU @ 3.0 GHz"
+      }
+    ],
+    "logical_cores": 8,
+    "physical_cores": 4
+  },
+  "disks": [],
+  "installed_programs": [],
+  "memory": {
+    "total_bytes": 17179869184
+  },
+  "network": {
+    "vpn_suspect_adapters": []
+  },
+  "os": {
+    "architecture": "64-bit",
+    "build": "22631",
+    "caption": "Windows 11 Pro",
+    "version": "10.0.22631"
+  },
+  "power": {
+    "active_scheme_raw": "High performance"
+  },
+  "security": {
+    "antivirus_products": [],
+    "defender_status": {
+      "AntivirusEnabled": true,
+      "AntivirusSignatureVersion": "1.0",
+      "RealTimeProtectionEnabled": true
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "confidence": "high",
+  "efficiency": {
+    "details": {},
+    "score": 78
+  },
+  "network_impact": {
+    "details": {},
+    "score": 88
+  },
+  "overall": 85,
+  "primary_bottleneck": null,
+  "resource_hygiene": {
+    "details": {},
+    "score": 100
+  },
+  "sample_count": 300,
+  "secondary_bottlenecks": [],
+  "security_overhead": {
+    "details": {},
+    "score": 90
+  },
+  "stability": {
+    "details": {},
+    "score": 92
+  },
+  "weights": {
+    "efficiency": 0.15,
+    "hygiene": 0.2,
+    "network": 0.15,
+    "security": 0.1,
+    "stability": 0.25,
+    "workload": 0.15
+  },
+  "workload_suitability": {
+    "details": {},
+    "score": 50
+  }
+}
