@@ -46,7 +46,31 @@ def _build_parser() -> argparse.ArgumentParser:
     m.add_argument("--target-name", default=None)
     m.add_argument("--target-pid", type=int, default=None)
     m.add_argument("--target-path", default=None)
-    m.add_argument("--tag", action="append", default=[], dest="tags")
+    m.add_argument("--tag", action="append", default=[], dest="tags",
+                   help="Free-form tag stored alongside the run. Repeat for "
+                        "multiple. Use --meta KEY=VALUE for structured tags "
+                        "that fleet aggregation can filter on.")
+    # Field-review M2: structured fleet metadata.
+    m.add_argument("--meta", action="append", default=[], dest="meta_kv",
+                   metavar="KEY=VALUE",
+                   help="Structured metadata, repeatable. e.g. "
+                        "--meta department=engineering "
+                        "--meta change_under_test=defender-1.1.27. Stored on "
+                        "the manifest under a `meta` block, distinct from "
+                        "free-form --tag entries.")
+    m.add_argument("--department", default=None,
+                   help="Convenience for --meta department=…")
+    m.add_argument("--ticket", default=None,
+                   help="Convenience for --meta ticket=… (e.g. PERF-1234)")
+    m.add_argument("--scenario", default=None,
+                   help="Convenience for --meta scenario=… "
+                        "(e.g. post-update-regression-check)")
+    m.add_argument("--change-under-test", default=None, dest="change_under_test",
+                   help="Convenience for --meta change_under_test=… "
+                        "(e.g. defender-engine-1.1.27)")
+    m.add_argument("--machine-class", default=None, dest="machine_class",
+                   help="Convenience for --meta machine_class=… "
+                        "(e.g. developer-workstation, kiosk, terminal-server)")
     m.add_argument("--latency-target", action="append", default=None, dest="latency_targets",
                    help="Latency probe target (host or IP). Repeat for multiple.")
     m.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
@@ -159,6 +183,34 @@ def _cmd_monitor(args: argparse.Namespace) -> int:
               "Offender detection will still work but target attribution will be generic.",
               file=sys.stderr)
 
+    # Field-review M2: collect structured metadata from the convenience
+    # flags + repeated --meta KEY=VALUE pairs. Convenience flags win
+    # over generic --meta of the same key.
+    meta: dict[str, str] = {}
+    for kv in (args.meta_kv or []):
+        if "=" not in kv:
+            print(f"warning: --meta '{kv}' has no '=' — skipped",
+                  file=sys.stderr)
+            continue
+        k, _, v = kv.partition("=")
+        k = k.strip().lower()
+        v = v.strip()
+        if not k:
+            print(f"warning: --meta '{kv}' has empty key — skipped",
+                  file=sys.stderr)
+            continue
+        meta[k] = v
+    for arg_name, meta_key in (
+        ("department", "department"),
+        ("ticket", "ticket"),
+        ("scenario", "scenario"),
+        ("change_under_test", "change_under_test"),
+        ("machine_class", "machine_class"),
+    ):
+        v = getattr(args, arg_name, None)
+        if isinstance(v, str) and v.strip():
+            meta[meta_key] = v.strip()
+
     config = Config(
         output_root=args.output_root,
         interval=args.interval,
@@ -168,6 +220,7 @@ def _cmd_monitor(args: argparse.Namespace) -> int:
         target_pid=args.target_pid,
         target_path=args.target_path,
         tags=list(args.tags or []),
+        meta=meta,
         latency_targets=list(args.latency_targets) if args.latency_targets else list(DEFAULT_LATENCY_TARGETS),
         manual_stop=args.manual_stop or (args.mode == "support" and args.duration is None),
         enable_gpu=args.gpu or args.phase3,

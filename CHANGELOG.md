@@ -18,6 +18,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **M2** (structured fleet metadata): manifest now carries a `meta`
+  block alongside the existing free-form `tags` array. CLI:
+  `monitor --meta department=engineering --meta ticket=PERF-1234`,
+  plus convenience flags `--department`, `--ticket`, `--scenario`,
+  `--change-under-test`, `--machine-class` for the well-known keys.
+  Pydantic schema validates the new field; v1 / v2 manifests without
+  a `meta` block still load (back-compat). The Runs-tab filter now
+  matches both keys and values, so a fleet operator can pull "all
+  runs for ticket PERF-1234" with one search. 6 contract tests
+  pinned in `tests/test_meta_tags.py`.
+
 - **M1** (privacy redaction at capture-time): `monitor --redact` flag.
   When set, after the run finishes the sanitize pass runs automatically,
   produces a `<run_id>_sanitized` sibling folder, and verifies the

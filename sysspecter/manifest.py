@@ -39,6 +39,10 @@ def build_run_manifest(paths: RunPaths, config: Config) -> dict[str, Any]:
         "interval_seconds": config.interval,
         "manual_stop": config.manual_stop,
         "tags": list(config.tags),
+        # Field-review M2: structured fleet metadata. Distinct from
+        # free-form `tags` so downstream tools can filter without
+        # parsing strings.
+        "meta": dict(config.meta),
         "target": {
             "name": config.target_name,
             "pid": config.target_pid,

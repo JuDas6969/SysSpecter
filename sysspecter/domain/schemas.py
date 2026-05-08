@@ -70,6 +70,10 @@ class Manifest(BaseModel):
     interval_seconds: float = 1.0
     manual_stop: bool = False
     tags: list[str] = Field(default_factory=list)
+    # Field-review M2: structured fleet metadata (department, ticket,
+    # scenario, …). Distinct from free-form tags. Optional for
+    # backwards-compat with v1 / v2 manifests.
+    meta: dict[str, str] = Field(default_factory=dict)
     target: ManifestTarget = Field(default_factory=ManifestTarget)
     latency_targets: list[str] = Field(default_factory=list)
     output_root: str | None = None

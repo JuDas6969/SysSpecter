@@ -22,6 +22,10 @@ class RunInfo:
     has_final_report: bool
     has_phases: bool
     modified_epoch: float
+    # Field-review M2: structured fleet metadata. v1/v2 manifests
+    # without a `meta` block read as an empty dict.
+    meta: dict[str, str]
+    tags: list[str]
 
 
 def _safe_json(path: str) -> dict[str, Any]:
@@ -53,6 +57,14 @@ def summarize_run(run_dir: str) -> RunInfo | None:
         mtime = os.path.getmtime(manifest_path)
     except OSError:
         mtime = 0.0
+    raw_meta = manifest.get("meta") or {}
+    meta = {
+        str(k): str(v) for k, v in raw_meta.items()
+        if isinstance(k, str) and isinstance(v, (str, int, float, bool))
+    } if isinstance(raw_meta, dict) else {}
+    raw_tags = manifest.get("tags") or []
+    tags = [str(t) for t in raw_tags if isinstance(t, str)] \
+        if isinstance(raw_tags, list) else []
     return RunInfo(
         path=run_dir,
         run_id=str(manifest.get("run_id") or os.path.basename(run_dir)),
@@ -66,6 +78,8 @@ def summarize_run(run_dir: str) -> RunInfo | None:
         has_final_report=os.path.exists(os.path.join(run_dir, "final_report.html")),
         has_phases=os.path.exists(os.path.join(run_dir, "phases_report.html")),
         modified_epoch=mtime,
+        meta=meta,
+        tags=tags,
     )
 
 

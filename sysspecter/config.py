@@ -83,6 +83,12 @@ class Config:
     target_pid: int | None = None
     target_path: str | None = None
     tags: list[str] = field(default_factory=list)
+    # Field-review M2: structured fleet metadata. `tags` stays as a
+    # free-form list for backwards compatibility; `meta` carries
+    # well-defined keys (department / ticket / scenario / change /
+    # machine_class) that downstream tools can filter on without
+    # parsing free-text. Always lower-cased keys, str values.
+    meta: dict[str, str] = field(default_factory=dict)
     latency_targets: list[str] = field(default_factory=lambda: list(DEFAULT_LATENCY_TARGETS))
     manual_stop: bool = False
     thresholds: Thresholds = field(default_factory=Thresholds)

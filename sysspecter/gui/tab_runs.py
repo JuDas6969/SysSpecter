@@ -150,10 +150,18 @@ class RunsTab(ttk.Frame):
             visible = self._all_rows
         else:
             def _match(r) -> bool:
+                # M2: include meta + tags in the searchable haystack so a
+                # filter like `ticket:PERF-1234` or `engineering` finds
+                # runs by their structured metadata.
+                meta_str = " ".join(
+                    f"{k}:{v} {v}" for k, v in (r.meta or {}).items()
+                )
+                tags_str = " ".join(r.tags or [])
                 haystack = " ".join(filter(None, [
                     r.run_id, r.hostname, r.mode,
                     r.primary_bottleneck,
                     r.stop_reason,
+                    meta_str, tags_str,
                 ])).lower()
                 return needle in haystack
             visible = [r for r in self._all_rows if _match(r)]

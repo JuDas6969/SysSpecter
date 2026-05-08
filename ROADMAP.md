@@ -383,8 +383,12 @@ tool produced. Numbering is the ID used in the field-review document.
   `[REDACTED]`, so cross-process correlation survives redaction. New
   pre-pass strips credential-shaped substrings (passwords / tokens /
   Bearer / JWT / AWS keys / GitHub tokens) from every text field.
-- [ ] **M2** — structured tag schema in manifest (department / ticket /
-  scenario / change_under_test).
+- [x] **M2** — `manifest.meta` block carrying structured fleet
+  metadata (department / ticket / scenario / change_under_test /
+  machine_class) alongside the existing free-form `tags` array.
+  CLI flags: `--meta KEY=VALUE` (repeatable) plus convenience
+  shortcuts. Pydantic schema validates; v1/v2 manifests without
+  `meta` still load. Runs-tab filter searches both keys + values.
 - [ ] **M3** — fleet aggregation tool downstream of capture.
 - [ ] **M5** — stable `machine_id` independent of hostname renames.
 
