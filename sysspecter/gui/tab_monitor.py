@@ -8,6 +8,7 @@ import re
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import filedialog, messagebox, ttk
+from typing import Any
 
 from .duration import DurationParseError, format_duration, parse_duration
 from .runner import SubprocessRunner
@@ -28,42 +29,52 @@ _HEARTBEAT_RE = re.compile(
 )
 
 
-# Presets the user can pick with one click. Values map onto the Monitor-tab
-# fields. `duration_seconds = None` means "use manual stop".
-_PRESETS: dict[str, dict[str, object]] = {
-    "— custom —": {},  # no-op; user is editing by hand
+# Presets the user can pick with one click — generated from the central
+# profile catalog (sysspecter.profiles). One source of truth shared with
+# the CLI's `--profile` flag.
+def _profile_to_preset(profile: Any) -> dict[str, object]:
+    phase3: list[str] = []
+    if profile.enable_gpu:
+        phase3.append("gpu")
+    if profile.enable_event_logs:
+        phase3.append("event_logs")
+    if profile.enable_etw_disk:
+        phase3.append("etw")
+    spec: dict[str, object] = {
+        "mode": profile.mode,
+        "duration_seconds": profile.duration_seconds,
+        "manual_stop": profile.manual_stop,
+        "phase3": tuple(phase3),
+    }
+    if profile.latency_targets:
+        spec["latency_targets"] = ", ".join(profile.latency_targets)
+    return spec
 
-    "Quick idle 5 min": {
-        "mode": "baseline", "duration_seconds": 5 * 60,
-        "manual_stop": False, "phase3": (),
-    },
-    "Baseline 30 min": {
-        "mode": "baseline", "duration_seconds": 30 * 60,
-        "manual_stop": False, "phase3": (),
-    },
-    "Workload 30 min": {
-        "mode": "workload", "duration_seconds": 30 * 60,
-        "manual_stop": False, "phase3": (),
-    },
-    "Long baseline 1 h": {
-        "mode": "baseline", "duration_seconds": 60 * 60,
-        "manual_stop": False, "phase3": ("event_logs",),
-    },
-    "Full Phase 3 run 15 min (admin)": {
-        "mode": "support", "duration_seconds": 15 * 60,
-        "manual_stop": False, "phase3": ("gpu", "event_logs", "etw"),
-    },
-    "VPN troubleshoot 10 min": {
-        "mode": "support", "duration_seconds": 10 * 60,
-        "manual_stop": False,
-        "latency_targets": "127.0.0.1, 8.8.8.8, 1.1.1.1, your.vpn.gateway",
-        "phase3": ("event_logs",),
-    },
-    "Support: user complaint (manual stop)": {
-        "mode": "support", "duration_seconds": None,
-        "manual_stop": True, "phase3": (),
-    },
-}
+
+def _build_preset_dict() -> dict[str, dict[str, object]]:
+    from .. import profiles as _profiles
+    out: dict[str, dict[str, object]] = {"— custom —": {}}
+    for name in _profiles.names():
+        p = _profiles.PROFILES[name]
+        # Pretty label so the dropdown reads naturally; the profile.name
+        # value goes into the run's manifest.meta.capture_profile by the
+        # CLI when invoked through subprocess.
+        if p.duration_seconds is None:
+            label = f"{name} — manual stop"
+        else:
+            mins = p.duration_seconds // 60
+            secs = p.duration_seconds % 60
+            if mins and secs:
+                label = f"{name} — {mins} min {secs} s"
+            elif mins:
+                label = f"{name} — {mins} min"
+            else:
+                label = f"{name} — {p.duration_seconds} s"
+        out[label] = _profile_to_preset(p)
+    return out
+
+
+_PRESETS: dict[str, dict[str, object]] = _build_preset_dict()
 
 
 _TT_MODE = (

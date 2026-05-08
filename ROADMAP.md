@@ -371,8 +371,12 @@ tool produced. Numbering is the ID used in the field-review document.
   contract tests.
 - [ ] **C3** — machine-class baselines (developer / kiosk / terminal-
   server / engineering-workstation).
-- [ ] **C4** — capture profiles (`leak-hunt`, `security-audit`,
-  `av-overhead`, `thermal`, `incident-snapshot`).
+- [x] **C4** — `monitor --profile NAME` + `--list-profiles`. Shipped
+  catalog: support / baseline / workload / leak-hunt / av-overhead /
+  thermal / incident-snapshot / vpn-troubleshoot / security-audit.
+  CLI flags override profile defaults; active profile stamped into
+  `manifest.meta.capture_profile`. GUI Monitor-tab presets are
+  generated from the same catalog (single source of truth).
 - [ ] **C5** — cross-platform abstraction (ETW / eBPF / dtrace).
 
 ### Multi-tenant / fleet

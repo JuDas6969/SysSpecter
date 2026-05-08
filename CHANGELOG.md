@@ -18,6 +18,21 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **C4** (capture profiles): `sysspecter monitor --profile NAME` plus
+  `--list-profiles`. Bundles "what kind of question are you answering"
+  into named presets that fill in mode + duration + Phase 3 collectors
+  + suggested meta tags. Shipped catalog covers the use cases the
+  field review called out: `support`, `baseline`, `workload`,
+  `leak-hunt`, `av-overhead`, `thermal`, `incident-snapshot`,
+  `vpn-troubleshoot`, `security-audit`. Every individual flag still
+  overrides the profile (`--profile thermal --duration 60` runs the
+  thermal preset for 60 s instead of the default 300 s). The active
+  profile name is stamped into `manifest.meta.capture_profile`.
+  GUI Monitor-tab presets are now generated from the same catalog —
+  one source of truth, CLI and GUI stay in sync. 24 contract tests
+  in `tests/test_profiles.py` covering catalog completeness,
+  CLI-override semantics, and per-profile resolution smoke checks.
+
 - **M2** (structured fleet metadata): manifest now carries a `meta`
   block alongside the existing free-form `tags` array. CLI:
   `monitor --meta department=engineering --meta ticket=PERF-1234`,

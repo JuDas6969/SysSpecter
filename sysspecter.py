@@ -35,14 +35,37 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     m = sub.add_parser("monitor", help="Run a monitoring session")
+    # Field-review C4: capture profile = preset bundle of mode +
+    # duration + Phase 3 settings + meta tags. Acts as default; every
+    # individual flag still overrides.
+    from sysspecter import profiles as _profiles
+    m.add_argument(
+        "--profile",
+        choices=_profiles.names(),
+        default=None,
+        help=(
+            "Capture profile (preset for 'what kind of question?'). "
+            "Sets sensible defaults you can still override per-flag. "
+            "Run with --list-profiles for the full catalog."
+        ),
+    )
+    m.add_argument(
+        "--list-profiles", action="store_true", dest="list_profiles",
+        help="Print the available --profile values with descriptions and exit.",
+    )
     m.add_argument(
         "--mode",
         choices=["support", "baseline", "workload"],
-        default="support",
+        default=None,
+        help="Run mode. If omitted, takes the value from --profile (or 'support').",
     )
     m.add_argument("--duration", type=int, default=None,
                    help="Duration in seconds. Default: manual-stop (support) / 1800 (baseline/workload)")
-    m.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_SECONDS)
+    # default=None so the profile (or the global default) can fill in.
+    m.add_argument("--interval", type=float, default=None,
+                   help=f"Per-tick sampling interval in seconds. "
+                        f"Defaults to the profile's value or "
+                        f"{DEFAULT_INTERVAL_SECONDS}.")
     m.add_argument("--target-name", default=None)
     m.add_argument("--target-pid", type=int, default=None)
     m.add_argument("--target-path", default=None)
@@ -166,27 +189,83 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_monitor(args: argparse.Namespace) -> int:
+    from sysspecter import profiles
     from sysspecter.collector.runner import run_monitor
 
-    if args.duration is None:
-        if args.mode == "support" or args.manual_stop:
-            duration = None
-        elif args.mode == "baseline":
-            duration = DEFAULT_DURATION_SECONDS_BASELINE
-        else:
-            duration = DEFAULT_DURATION_SECONDS_WORKLOAD
-    else:
-        duration = args.duration
+    # --list-profiles is a no-run helper.
+    if getattr(args, "list_profiles", False):
+        print("Available capture profiles:\n")
+        print(profiles.describe_all())
+        return 0
 
-    if args.mode == "workload" and not (args.target_name or args.target_pid or args.target_path):
+    # --- Field-review C4: resolve the capture profile --------------------
+    # Profile fills the gaps; explicit CLI flags always win.
+    profile = profiles.get(args.profile) if args.profile else None
+    if args.profile and profile is None:
+        print(f"error: unknown profile {args.profile!r}", file=sys.stderr)
+        return 2
+
+    mode = args.mode or (profile.mode if profile else None) or "support"
+    interval = args.interval if args.interval is not None else (
+        profile.interval_seconds if profile and profile.interval_seconds is not None
+        else DEFAULT_INTERVAL_SECONDS
+    )
+    # manual_stop is store_true → False if absent. OR with profile so a
+    # "manual_stop=True" profile (e.g. support) still gets the flag.
+    manual_stop_flag = bool(args.manual_stop) or bool(
+        profile.manual_stop if profile else False
+    )
+
+    if args.duration is not None:
+        duration = args.duration
+    elif profile and profile.duration_seconds is not None:
+        duration = profile.duration_seconds
+    elif mode == "support" or manual_stop_flag:
+        duration = None
+    elif mode == "baseline":
+        duration = DEFAULT_DURATION_SECONDS_BASELINE
+    else:
+        duration = DEFAULT_DURATION_SECONDS_WORKLOAD
+
+    # Phase 3 collectors: profile sets a default, CLI flag turns ON. We
+    # never let a CLI invocation that asked for `--gpu` end up disabled
+    # because the profile says off; we never silently turn off a
+    # profile's enabled collector either.
+    enable_gpu = (
+        bool(args.gpu) or bool(args.phase3)
+        or bool(profile.enable_gpu if profile else False)
+    )
+    enable_event_logs = (
+        bool(args.event_logs) or bool(args.phase3)
+        or bool(profile.enable_event_logs if profile else False)
+    )
+    enable_etw_disk = (
+        bool(args.etw) or bool(args.phase3)
+        or bool(profile.enable_etw_disk if profile else False)
+    )
+
+    # latency_targets: explicit CLI list wins, then profile, then defaults.
+    if args.latency_targets:
+        latency_targets = list(args.latency_targets)
+    elif profile and profile.latency_targets:
+        latency_targets = list(profile.latency_targets)
+    else:
+        latency_targets = list(DEFAULT_LATENCY_TARGETS)
+
+    if mode == "workload" and not (args.target_name or args.target_pid or args.target_path):
         print("warning: workload mode running without --target-name/--target-pid/--target-path. "
               "Offender detection will still work but target attribution will be generic.",
               file=sys.stderr)
 
     # Field-review M2: collect structured metadata from the convenience
-    # flags + repeated --meta KEY=VALUE pairs. Convenience flags win
-    # over generic --meta of the same key.
+    # flags + repeated --meta KEY=VALUE pairs + profile suggestions.
+    # Order of precedence: profile.suggested_meta < generic --meta <
+    # convenience flag (so a CLI flag always wins).
     meta: dict[str, str] = {}
+    if profile and profile.suggested_meta:
+        meta.update(profile.suggested_meta)
+    if profile:
+        meta["capture_profile"] = profile.name
     for kv in (args.meta_kv or []):
         if "=" not in kv:
             print(f"warning: --meta '{kv}' has no '=' — skipped",
@@ -213,19 +292,19 @@ def _cmd_monitor(args: argparse.Namespace) -> int:
 
     config = Config(
         output_root=args.output_root,
-        interval=args.interval,
-        mode=args.mode,
+        interval=interval,
+        mode=mode,
         duration=duration,
         target_name=args.target_name,
         target_pid=args.target_pid,
         target_path=args.target_path,
         tags=list(args.tags or []),
         meta=meta,
-        latency_targets=list(args.latency_targets) if args.latency_targets else list(DEFAULT_LATENCY_TARGETS),
-        manual_stop=args.manual_stop or (args.mode == "support" and args.duration is None),
-        enable_gpu=args.gpu or args.phase3,
-        enable_event_logs=args.event_logs or args.phase3,
-        enable_etw_disk=args.etw or args.phase3,
+        latency_targets=latency_targets,
+        manual_stop=manual_stop_flag or (mode == "support" and args.duration is None),
+        enable_gpu=enable_gpu,
+        enable_event_logs=enable_event_logs,
+        enable_etw_disk=enable_etw_disk,
     )
     try:
         run_dir = run_monitor(config)
