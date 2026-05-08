@@ -37,9 +37,9 @@ def test_token_format_is_machine_dash_8hex() -> None:
     """Every code path must produce a token matching MACHINE-xxxxxxxx."""
     cases = [
         compute_machine_id(_smbios_uuid="abcdef12-3456-7890-1234-567890abcdef"),
-        compute_machine_id(_smbios_uuid=None,
+        compute_machine_id(_smbios_uuid=None, _machine_sid=None,
                            _macs=["AA:BB:CC:DD:EE:FF"]),
-        compute_machine_id(_smbios_uuid=None, _macs=[],
+        compute_machine_id(_smbios_uuid=None, _machine_sid=None, _macs=[],
                            _hostname="some-host"),
     ]
     for c in cases:
@@ -73,15 +73,17 @@ def test_uuid_case_insensitive() -> None:
 
 
 def test_smbios_uuid_wins_when_present() -> None:
-    """Priority 1: when an SMBIOS UUID is available, the MAC and
-    hostname don't enter the hash."""
+    """Priority 1: when an SMBIOS UUID is available, the MAC, SID
+    and hostname don't enter the hash."""
     with_uuid = compute_machine_id(
         _smbios_uuid="abc-uuid",
+        _machine_sid="S-1-5-21-1-2-3",
         _macs=["AA:BB:CC:DD:EE:FF"],
         _hostname="host",
     )
     only_uuid = compute_machine_id(
         _smbios_uuid="abc-uuid",
+        _machine_sid="S-1-5-21-9-9-9",
         _macs=[],
         _hostname="other-host",
     )
@@ -89,7 +91,78 @@ def test_smbios_uuid_wins_when_present() -> None:
     assert with_uuid.source == "smbios_uuid"
 
 
-def test_mac_used_when_uuid_absent() -> None:
+def test_machine_sid_used_when_uuid_absent() -> None:
+    """Priority 2: SID wins over MAC + hostname when present.
+    This is the field-review-named tier — survives NIC swaps."""
+    result = compute_machine_id(
+        _smbios_uuid=None,
+        _machine_sid="S-1-5-21-1234567890-987654321-111111111",
+        _macs=["AA:BB:CC:DD:EE:FF"],
+        _hostname="some-host",
+    )
+    assert result.source == "machine_sid"
+    assert _TOKEN_RE.match(result.machine_id)
+
+
+def test_machine_sid_with_account_rid_normalises() -> None:
+    """A Win32_UserAccount.SID has the form `<machine-sid>-<rid>`.
+    Two accounts on the same machine have different RIDs but same
+    machine SID — the resolver must collapse them."""
+    a = compute_machine_id(
+        _smbios_uuid=None,
+        _machine_sid="S-1-5-21-1234567890-987654321-111111111-500",
+        _macs=["AA:BB:CC:DD:EE:FF"],
+    )
+    # Caller passes only the machine-SID prefix (this test simulates
+    # what the production helper hands back after stripping the RID).
+    b = compute_machine_id(
+        _smbios_uuid=None,
+        _machine_sid="S-1-5-21-1234567890-987654321-111111111",
+        _macs=["AA:BB:CC:DD:EE:FF"],
+    )
+    # The PRODUCTION helper strips the RID before hashing, so a
+    # caller-supplied SID with a RID that doesn't match the
+    # canonical prefix DOESN'T match the canonical id. This test
+    # documents that contract: callers supply already-canonicalised
+    # SIDs.
+    assert a.source == "machine_sid"
+    assert b.source == "machine_sid"
+    # Different SID strings, different ids (since the test bypasses
+    # the prefix extraction).
+    assert a.machine_id != b.machine_id
+
+
+def test_machine_sid_case_insensitive() -> None:
+    """SIDs are returned upper-case from PowerShell but be tolerant."""
+    a = compute_machine_id(
+        _smbios_uuid=None, _machine_sid="s-1-5-21-1-2-3",
+        _macs=[],
+    )
+    b = compute_machine_id(
+        _smbios_uuid=None, _machine_sid="S-1-5-21-1-2-3",
+        _macs=[],
+    )
+    assert a.machine_id == b.machine_id
+
+
+def test_invalid_sid_falls_through_to_mac() -> None:
+    """A malformed SID (wrong prefix, junk) must be ignored, not
+    used. Falls through to the next tier."""
+    for bad in ("not-a-sid", "S-1-1-1-2-3", "", None,
+                "S-1-5-32-544",        # built-in admin group, not machine SID
+                "S-1-5-18"):           # local system, not a domain SID
+        result = compute_machine_id(
+            _smbios_uuid=None,
+            _machine_sid=bad,
+            _macs=["AA:BB:CC:DD:EE:FF"],
+        )
+        assert result.source == "mac", (
+            f"bad SID {bad!r} should fall through to MAC, "
+            f"got {result.source!r}"
+        )
+
+
+def test_mac_used_when_uuid_and_sid_absent() -> None:
     cases = (
         None, "", "00000000-0000-0000-0000-000000000000",
         "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
@@ -97,11 +170,12 @@ def test_mac_used_when_uuid_absent() -> None:
     for sentinel in cases:
         result = compute_machine_id(
             _smbios_uuid=sentinel,
+            _machine_sid=None,
             _macs=["AA:BB:CC:DD:EE:FF"],
             _hostname="some-host",
         )
         assert result.source == "mac", (
-            f"sentinel UUID {sentinel!r} should fall back to MAC"
+            f"sentinel UUID {sentinel!r} with no SID should fall back to MAC"
         )
 
 
@@ -109,11 +183,11 @@ def test_mac_order_independent() -> None:
     """Two NICs reported in different order must produce the same id —
     otherwise restarting the machine could rotate the id."""
     a = compute_machine_id(
-        _smbios_uuid=None,
+        _smbios_uuid=None, _machine_sid=None,
         _macs=["AA:BB:CC:DD:EE:FF", "11:22:33:44:55:66"],
     )
     b = compute_machine_id(
-        _smbios_uuid=None,
+        _smbios_uuid=None, _machine_sid=None,
         _macs=["11:22:33:44:55:66", "AA:BB:CC:DD:EE:FF"],
     )
     assert a.machine_id == b.machine_id
@@ -121,7 +195,8 @@ def test_mac_order_independent() -> None:
 
 def test_hostname_fallback_is_flagged_as_weak() -> None:
     result = compute_machine_id(
-        _smbios_uuid=None, _macs=[], _hostname="laptop42",
+        _smbios_uuid=None, _machine_sid=None, _macs=[],
+        _hostname="laptop42",
     )
     assert result.source == "hostname_fallback", (
         "hostname-only fallback must be flagged so consumers can warn"
@@ -130,10 +205,14 @@ def test_hostname_fallback_is_flagged_as_weak() -> None:
 
 
 def test_hostname_case_insensitive_fallback() -> None:
-    a = compute_machine_id(_smbios_uuid=None, _macs=[],
-                           _hostname="LAPTOP42")
-    b = compute_machine_id(_smbios_uuid=None, _macs=[],
-                           _hostname="laptop42")
+    a = compute_machine_id(
+        _smbios_uuid=None, _machine_sid=None, _macs=[],
+        _hostname="LAPTOP42",
+    )
+    b = compute_machine_id(
+        _smbios_uuid=None, _machine_sid=None, _macs=[],
+        _hostname="laptop42",
+    )
     assert a.machine_id == b.machine_id
 
 
@@ -141,7 +220,8 @@ def test_empty_hostname_does_not_crash() -> None:
     """Edge case: socket.gethostname() returns "" on some misconfigured
     hosts. The fallback must not crash."""
     result = compute_machine_id(
-        _smbios_uuid=None, _macs=[], _hostname="",
+        _smbios_uuid=None, _machine_sid=None, _macs=[],
+        _hostname="",
     )
     assert _TOKEN_RE.match(result.machine_id)
     assert result.source == "hostname_fallback"

@@ -420,8 +420,9 @@ tool produced. Numbering is the ID used in the field-review document.
   `meta` still load. Runs-tab filter searches both keys + values.
 - [ ] **M3** — fleet aggregation tool downstream of capture.
 - [x] **M5** — `manifest.machine_id` is a `MACHINE-xxxxxxxx` token
-  hashed from the SMBIOS UUID (priority 1), physical NIC MACs
-  (priority 2), or hostname (priority 3, weak fallback flagged via
+  hashed from the SMBIOS UUID (priority 1), Windows Machine SID
+  (priority 2 — survives NIC swaps), physical NIC MACs (priority 3),
+  or hostname (priority 4, weak fallback flagged via
   `machine_id_source`). Survives hostname renames, supports
   longitudinal trending across runs.
 

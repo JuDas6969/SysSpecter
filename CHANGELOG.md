@@ -23,12 +23,21 @@ versions follow [Semantic Versioning](https://semver.org/).
   chars). Same hardware → same id, regardless of hostname renames,
   re-images, or fleet-wide rename campaigns — fixing the legacy
   longitudinal-trending bug where renaming a laptop wiped its run
-  history. Fallback chain: SMBIOS UUID → physical NIC MACs (sorted)
-  → hostname. The accompanying `machine_id_source` field tells
-  consumers which tier was used so fleet aggregators can warn on
-  the weak `hostname_fallback` tier. Pydantic schema accepts the
-  new fields; v1/v2 manifests written before this commit still
-  load. 15 contract tests in `tests/test_machine_id.py`.
+  history. Fallback chain (most-stable first):
+    1. SMBIOS UUID (`Win32_ComputerSystemProduct.UUID`) — survives
+       OS reinstalls; tied to the hardware itself.
+    2. Windows Machine SID (`S-1-5-21-X-Y-Z` prefix of any local
+       account SID, queried via `Win32_UserAccount`) — survives
+       hostname renames AND NIC swaps; only changes on full OS
+       reinstall. The field-review's named "MAC + SID + something
+       durable" recipe.
+    3. Physical NIC MACs sorted + joined.
+    4. Hostname (last-resort fallback, flagged as weak).
+  The accompanying `machine_id_source` field tells consumers which
+  tier was used so fleet aggregators can warn on the weak
+  `hostname_fallback` tier. Pydantic schema accepts the new fields;
+  v1/v2 manifests written before this commit still load. 19 contract
+  tests in `tests/test_machine_id.py`.
 
 - **A3** (periodic-pattern detection): new analyzer module
   `sysspecter/analyzer/periodicity.py` runs Pearson autocorrelation
