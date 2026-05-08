@@ -353,8 +353,11 @@ tool produced. Numbering is the ID used in the field-review document.
   annotated as `slope_source`. New `_find_plateau_start` annotates
   the leak-phase end. Catches the MotoDB-pattern (8 h leak +
   2 h plateau in a 10 h run) the old heuristic missed.
-- [ ] **A2** — plateau / deadlock detection (RSS growth then RSS+CPU
-  flat for 10 min).
+- [x] **A2** — `sysspecter/analyzer/deadlocks.py` emits
+  `deadlock_suspected` findings on the
+  growth-≥1h-then-low-cpu-≥10min signature. Stack-aware (reuses
+  C1 multipliers), per-PID, with both phases' aggregate stats in
+  the finding. HTML report ships a dedicated section.
 - [ ] **A3** — periodicity detection on system metrics (autocorrelation
   finds Defender / EDR / SCM cycles).
 - [ ] **A4** — process-tree visual reconstruction in HTML report.

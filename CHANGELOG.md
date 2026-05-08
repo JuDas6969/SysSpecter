@@ -18,6 +18,24 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A2** (deadlock-after-leak detection): new analyzer module
+  `sysspecter/analyzer/deadlocks.py` and a new finding type
+  `deadlock_suspected` in `findings.json`. Detects the canonical
+  failure signature the field review surfaced on the MotoDB run:
+  a process accumulates RSS at ≥ 50 KB/s for ≥ 1 hour, THEN holds
+  RSS flat (slope < 10 KB/s) AND drops to < 5 % CPU for ≥ 10 minutes.
+  Stack-aware (reuses C1 multipliers, so a JVM ramping its heap
+  doesn't trip the growth phase). Findings carry both phases'
+  bounds + aggregate stats:
+    growth_phase: start_s / end_s / duration_s / mean_slope / mean_r2
+    plateau_phase: start_s / end_s / duration_s / mean_slope / mean_cpu_pct
+  HTML report ships a dedicated "Deadlock-suspected processes"
+  section; pipeline summary verdict mentions the count. 8 contract
+  tests in `tests/test_deadlock_detection.py` covering the happy
+  path AND the false-positive guards (active-leak-without-plateau,
+  pure-plateau, busy-flat-RSS, growth too short, plateau too short,
+  too-few-samples edge case).
+
 - **A1** (sliding-window leak detection): the legacy
   `detect_memory_leaks` regressed over the entire run, which on long
   captures meant a clear leak phase followed by a plateau got its

@@ -168,6 +168,42 @@
   {% endif %}
 </div>
 
+{% if findings.deadlocks %}
+<h2>Deadlock-suspected processes
+  <span class="small">(growth followed by CPU drop — likely hung worker)</span></h2>
+<div class="card">
+  <table><thead><tr>
+    <th>pid</th><th>name</th><th>stack</th>
+    <th>growth phase</th><th>plateau phase</th><th>finding</th>
+  </tr></thead><tbody>
+  {% for d in findings.deadlocks %}
+  <tr>
+    <td>{{ d.pid }}</td>
+    <td>{{ d.process_name }}</td>
+    <td>{{ d.stack }}</td>
+    <td>
+      {{ d.growth_phase.start_s | int }}–{{ d.growth_phase.end_s | int }} s<br>
+      <span class="small">
+        {{ (d.growth_phase.mean_slope_bytes_per_sec / 1024) | round(0) | int }} KB/s,
+        {{ d.growth_phase.duration_s | int }} s,
+        R²={{ "%.2f" | format(d.growth_phase.mean_r2) }}
+      </span>
+    </td>
+    <td>
+      {{ d.plateau_phase.start_s | int }}–{{ d.plateau_phase.end_s | int }} s<br>
+      <span class="small">
+        {{ "%.1f" | format(d.plateau_phase.mean_cpu_pct) }}% CPU,
+        slope {{ (d.plateau_phase.mean_slope_bytes_per_sec / 1024) | round(1) }} KB/s,
+        {{ d.plateau_phase.duration_s | int }} s
+      </span>
+    </td>
+    <td>{{ d.description }}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+{% endif %}
+
 <h2>Top applications <span class="small">(PIDs grouped)</span></h2>
 <div class="card">
 {% if findings.apps and findings.apps.top_cpu %}

@@ -141,6 +141,7 @@ def analyze_run(
             "anomalies": [],
             "slowdowns": [],
             "leaks": {"memory": [], "handles": [], "threads": []},
+            "deadlocks": [],
             "offenders": {},
             "apps": {},
             "network_attribution": {"by_app": [], "by_pid": [], "samples": 0},
@@ -158,6 +159,7 @@ def analyze_run(
                 "total_anomalies": 0,
                 "total_slowdown_windows": 0,
                 "total_leak_candidates": 0,
+                "total_deadlocks": 0,
                 "primary_bottleneck": None,
                 "insufficient_data": True,
             },
@@ -193,6 +195,11 @@ def analyze_run(
 
     logger.info("detecting leak patterns")
     leaks = detect_leak_patterns(rd.process_rows, th)
+
+    # Field-review A2: deadlock-after-leak signature.
+    logger.info("detecting deadlock-suspected processes")
+    from .deadlocks import detect_deadlocks
+    deadlocks = detect_deadlocks(rd.process_rows, th)
 
     logger.info("ranking offenders")
     offenders = rank_offenders(rd.process_rows, top_n=10)
@@ -247,6 +254,7 @@ def analyze_run(
         "anomalies": anomalies,
         "slowdowns": slowdowns,
         "leaks": leaks,
+        "deadlocks": deadlocks,
         "offenders": offenders,
         "apps": apps,
         "network_attribution": network_attribution,
@@ -256,7 +264,8 @@ def analyze_run(
         "etw_disk": etw_disk,
         "process_churn": churn,
         "bottlenecks": bottlenecks,
-        "summary": _summarize(anomalies, slowdowns, leaks, bottlenecks, scores),
+        "summary": _summarize(anomalies, slowdowns, leaks, bottlenecks, scores,
+                              deadlocks=deadlocks),
         "analysis_window": analysis_window,
     }
 
@@ -273,7 +282,9 @@ def _summarize(
     leaks: dict[str, list[dict[str, Any]]],
     bottlenecks: dict[str, Any],
     scores: dict[str, Any],
+    deadlocks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    deadlocks = deadlocks or []
     verdict_parts: list[str] = []
     primary = bottlenecks.get("primary")
     if primary:
@@ -288,6 +299,13 @@ def _summarize(
     total_leaks = sum(len(v) for v in leaks.values())
     if total_leaks:
         verdict_parts.append(f"{total_leaks} resource-leak candidate(s).")
+    if deadlocks:
+        # Field-review A2: deadlock signature is the highest-priority
+        # signal for a leaking-then-stuck workload — surface it loudly.
+        verdict_parts.append(
+            f"{len(deadlocks)} deadlock-suspected process(es) "
+            "(growth followed by CPU drop)."
+        )
     verdict_parts.append(f"Overall score {scores['overall']:.0f}/100 ({scores['confidence']} confidence).")
 
     return {
@@ -295,5 +313,6 @@ def _summarize(
         "total_anomalies": len(anomalies),
         "total_slowdown_windows": len(slowdowns),
         "total_leak_candidates": total_leaks,
+        "total_deadlocks": len(deadlocks),
         "primary_bottleneck": primary,
     }
