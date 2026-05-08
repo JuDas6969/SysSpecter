@@ -50,6 +50,11 @@ class CatalogEntry:
     category: str
     vendor: str | None
     display_name: str
+    # Field-review C1: language / runtime stack the process belongs to.
+    # Drives stack-aware leak thresholds in `analyzer/leak_thresholds.py`
+    # so JVM heap-at-Xmx / .NET server-GC saw-tooth / Chromium GC cycles
+    # don't get flagged as leaks. None = unknown / "native".
+    stack: str | None = None
 
 
 # Sentinel for "we have looked but found nothing" — distinct from None so
@@ -82,6 +87,12 @@ class Catalog:
     def vendor(self, name: str | None) -> str | None:
         e = self.lookup(name)
         return e.vendor if e else None
+
+    def stack(self, name: str | None) -> str | None:
+        """Return the language / runtime stack tag (chromium / jvm /
+        dotnet / cpython / nodejs / native …), or None if unknown."""
+        e = self.lookup(name)
+        return e.stack if e else None
 
     def display_name(self, name: str | None) -> str:
         """Return the catalog's pretty name, or a sensible fallback."""
@@ -176,11 +187,13 @@ def _parse_entries(payload: object) -> list[CatalogEntry]:
             raw.get("display_name") if isinstance(raw.get("display_name"), str)
             else name
         )
+        stack = raw.get("stack") if isinstance(raw.get("stack"), str) else None
         out.append(CatalogEntry(
             name=name.strip(),
             category=category.strip(),
             vendor=vendor,
             display_name=display_name,
+            stack=stack.strip() if stack else None,
         ))
     return out
 

@@ -18,6 +18,29 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **C1** (stack-aware leak detection): the leak heuristic in
+  `analyzer/leaks.py` was tuned for native / Matlab / .NET-desktop
+  workloads. On customer hosts running JVM, Chromium-family browsers
+  (or Electron apps), Node.js, or Go, the same heuristic produced
+  endless false positives because those runtimes are SUPPOSED to grow:
+  - JVM grows toward `-Xmx` then plateaus by design
+  - .NET server-GC produces saw-tooth RSS until Gen 2 collections
+  - Chromium / Electron renderers cycle GC per-tab, accumulate caches
+  - Node.js V8 ramps toward its 1.4 GB ceiling
+  - CPython with reference cycles reaches a non-flat steady state.
+  Process catalog (C2) gained a `stack` field — the JSON catalog tags
+  Chrome/Edge/VS Code/Slack as `chromium`, java/IntelliJ as `jvm`,
+  python as `cpython`, etc. New module
+  `analyzer/leak_thresholds.py` ships per-stack profiles with tuned
+  multipliers (slope, min growth, mono floor, R² floor, plateau-is-
+  normal flag). `detect_memory_leaks` / `detect_handle_leaks` /
+  `detect_thread_leaks` look up the canonical stack per PID and apply
+  the profile before grading confidence. Findings now carry the
+  resolved `stack` tag in their output. 9 contract tests in
+  `tests/test_leak_thresholds.py` verify the false-positive gate
+  (JVM-at-Xmx, Chromium-saw-tooth) AND the true-positive path
+  (genuine native + steeper-than-JVM-bar leaks still fire).
+
 - **C4** (capture profiles): `sysspecter monitor --profile NAME` plus
   `--list-profiles`. Bundles "what kind of question are you answering"
   into named presets that fill in mode + duration + Phase 3 collectors

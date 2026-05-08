@@ -22,6 +22,8 @@ from collections import defaultdict
 from typing import Any
 
 from ..config import Thresholds
+from ..process_catalog import catalog as _catalog
+from .leak_thresholds import StackLeakProfile, for_stack
 from .stats import (
     linear_regression_r2,
     linear_regression_slope,
@@ -29,6 +31,23 @@ from .stats import (
     moving_average,
     plateau_fraction,
 )
+
+
+def _stack_for_pid(process_rows: list[dict[str, Any]], pid: int) -> str | None:
+    """Pick the canonical exe name for a PID (most-frequent), look up
+    its stack tag in the C2 process catalog. Returns None for unknown
+    processes — caller falls back to the `native` profile."""
+    counts: dict[str, int] = {}
+    for r in process_rows:
+        if r.get("pid") != pid:
+            continue
+        name = r.get("name")
+        if isinstance(name, str) and name:
+            counts[name] = counts.get(name, 0) + 1
+    if not counts:
+        return None
+    canonical = max(counts.items(), key=lambda kv: kv[1])[0]
+    return _catalog().stack(canonical)
 
 
 def _series_for_pid(
@@ -92,23 +111,40 @@ def _grade_confidence(
     growth_ratio: float,
     end_val: float,
     thresholds: dict[str, float],
+    stack_profile: StackLeakProfile | None = None,
 ) -> str | None:
     """Given the series stats, return a confidence tier or None if the trend
     doesn't qualify.
 
     - slope / slope_unit = how many multiples of the "suspicious" slope threshold
     - Confidence is downgraded if R^2 is low, monotonicity weak, or the series
-      has already plateaued (growth stopped)."""
-    if slope < slope_unit:
+      has already plateaued (growth stopped).
+    - Field-review C1: ``stack_profile`` tunes thresholds for managed-runtime
+      saw-tooth (JVM / .NET server-GC / Chromium / V8). For unknown stacks
+      the profile is `native` — same numbers as before C1.
+    """
+    profile = stack_profile or for_stack(None)
+    # Stack-aware slope multiplier — JVM/Chromium need a much steeper
+    # slope before we even consider this a candidate.
+    effective_slope_unit = slope_unit * profile.slope_multiplier
+    if slope < effective_slope_unit:
         return None
-    # Sawtooth/GC patterns: steep slope but dips all the time -> not a leak
-    if mono < 0.55:
+    # Sawtooth/GC patterns: steep slope but dips all the time -> not a leak.
+    # Managed runtimes have stricter mono floors than native code.
+    if mono < profile.mono_min:
         return None
-    # Growth clearly stopped in the final chunk — probably a warm-up, not a leak
-    if plateau >= 0.35:
+    # Growth clearly stopped in the final chunk — probably a warm-up,
+    # not a leak. JVM heaps reach -Xmx and STAY there by design, so
+    # this guard is suppressed for those.
+    if plateau >= 0.35 and not profile.plateau_is_normal:
+        return None
+    # Stack-specific relative-growth floor: a JVM at 4 GB that grew
+    # 50 MB is rounding noise, but the same growth on a 100 MB native
+    # process is a real signal.
+    if growth_ratio < profile.rss_min_growth_ratio:
         return None
 
-    ratio = slope / slope_unit
+    ratio = slope / effective_slope_unit
     base: str
     if ratio >= 10 and growth_ratio >= thresholds.get("strong_growth", 0.5):
         base = "strong evidence"
@@ -117,12 +153,12 @@ def _grade_confidence(
     else:
         base = "suspicious"
 
-    # Downgrade by fit quality
+    # Downgrade by fit quality (stack-specific floor).
     if r2 < 0.4 and base == "strong evidence":
         base = "likely"
     if r2 < 0.25 and base == "likely":
         base = "suspicious"
-    if r2 < 0.15:
+    if r2 < profile.r2_min:
         return None
 
     # Downgrade if monotonicity is weak (borderline sawtooth)
@@ -149,7 +185,12 @@ def detect_memory_leaks(
         dur = stats["duration"]
         name = stats["name"]
         growth_bytes = max(0.0, e_val - s_val)
-        if growth_bytes < 20 * 1024 * 1024:
+        # Field-review C1: stack-aware growth floor. Browsers / JVM
+        # start big, so a 20 MB growth is rounding noise on those
+        # but a real signal on a 100 MB native process.
+        stack = _stack_for_pid(process_rows, pid)
+        profile = for_stack(stack)
+        if growth_bytes < profile.rss_min_growth_mb * 1024 * 1024:
             continue
         growth_ratio = (growth_bytes / s_val) if s_val > 0 else 0.0
         confidence = _grade_confidence(
@@ -161,6 +202,7 @@ def detect_memory_leaks(
             growth_ratio=growth_ratio,
             end_val=e_val,
             thresholds={"strong_growth": 0.5, "likely_growth": 0.2},
+            stack_profile=profile,
         )
         if confidence is None:
             continue
@@ -170,6 +212,7 @@ def detect_memory_leaks(
             "confidence": confidence,
             "pid": pid,
             "process_name": name,
+            "stack": stack or "native",
             "rss_start_mb": round(s_val / (1024 * 1024), 1),
             "rss_end_mb": round(e_val / (1024 * 1024), 1),
             "rss_peak_mb": round(stats["peak_val"] / (1024 * 1024), 1),
@@ -181,9 +224,9 @@ def detect_memory_leaks(
             "monotonic_ratio": round(stats["mono"], 3),
             "plateau_fraction": round(stats["plateau"], 3),
             "description": (
-                f"{name} (pid {pid}) RSS grew from {s_val/1024/1024:.1f}MB to "
-                f"{e_val/1024/1024:.1f}MB over {dur:.0f}s "
-                f"(slope {slope/1024:.1f} KB/s, R²={stats['r2']:.2f}, "
+                f"{name} (pid {pid}, stack={stack or 'native'}) RSS grew from "
+                f"{s_val/1024/1024:.1f}MB to {e_val/1024/1024:.1f}MB over "
+                f"{dur:.0f}s (slope {slope/1024:.1f} KB/s, R²={stats['r2']:.2f}, "
                 f"monotonic={stats['mono']*100:.0f}%). Confidence: {confidence}."
             ),
         })
@@ -210,6 +253,8 @@ def detect_handle_leaks(
         if e_val - s_val < 100:
             continue
         growth_ratio = ((e_val - s_val) / s_val) if s_val > 0 else 0.0
+        stack = _stack_for_pid(process_rows, pid)
+        profile = for_stack(stack)
         # slope unit = 1 handle / sec (per_min/60)
         confidence = _grade_confidence(
             slope=per_min,
@@ -220,6 +265,7 @@ def detect_handle_leaks(
             growth_ratio=growth_ratio,
             end_val=e_val,
             thresholds={"strong_growth": 0.5, "likely_growth": 0.2},
+            stack_profile=profile,
         )
         if confidence is None:
             continue
@@ -233,6 +279,7 @@ def detect_handle_leaks(
             "confidence": confidence,
             "pid": pid,
             "process_name": name,
+            "stack": stack or "native",
             "handles_start": int(s_val),
             "handles_end": int(e_val),
             "growth_per_min": round(per_min, 1),
@@ -270,6 +317,8 @@ def detect_thread_leaks(
         if e_val - s_val < 20:
             continue
         growth_ratio = ((e_val - s_val) / s_val) if s_val > 0 else 0.0
+        stack = _stack_for_pid(process_rows, pid)
+        profile = for_stack(stack)
         confidence = _grade_confidence(
             slope=per_min,
             slope_unit=th.thread_growth_per_min_suspicious,
@@ -279,6 +328,7 @@ def detect_thread_leaks(
             growth_ratio=growth_ratio,
             end_val=e_val,
             thresholds={"strong_growth": 0.5, "likely_growth": 0.2},
+            stack_profile=profile,
         )
         if confidence is None:
             continue
@@ -292,6 +342,7 @@ def detect_thread_leaks(
             "confidence": confidence,
             "pid": pid,
             "process_name": name,
+            "stack": stack or "native",
             "threads_start": int(s_val),
             "threads_end": int(e_val),
             "growth_per_min": round(per_min, 1),

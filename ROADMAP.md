@@ -358,7 +358,13 @@ tool produced. Numbering is the ID used in the field-review document.
 
 ### Cross-domain (multi-vendor / multi-stack)
 
-- [ ] **C1** — stack-aware leak thresholds (JVM heaps, .NET server-GC
+- [x] **C1** — stack-aware leak thresholds shipped:
+  `sysspecter/analyzer/leak_thresholds.py` carries per-stack profiles
+  for chromium / gecko / jvm / dotnet / cpython / nodejs / go /
+  system / native; the C2 catalog tags processes with their stack;
+  `detect_memory_leaks` looks up the profile per PID and tightens
+  the bar before flagging. JVM-at-Xmx and Chromium-saw-tooth no
+  longer fire (regression-tested). Original (jvm heaps, .NET server-GC
   saw-tooth, browser auto-GC differ from Python/Matlab). False
   positives blocked.
 - [x] **C2** — JSON-driven process catalog
