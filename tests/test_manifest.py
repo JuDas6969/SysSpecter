@@ -73,6 +73,45 @@ def test_update_manifest_end_sets_all_end_fields(tmp_path: Path) -> None:
     assert data["ended_at"] == "2026-04-23T01:01:00"
     assert data["stop_reason"] == "duration_elapsed"
     assert data["duration_actual_seconds"] == 60.5
+    # When kwargs aren't supplied, the new optional fields stay absent
+    # so old runs don't grow stale keys.
+    assert "cadence_quality" not in data
+    assert "process_priority_class" not in data
+
+
+def test_update_manifest_end_writes_cadence_quality_when_supplied(tmp_path: Path) -> None:
+    """v3-priority-1: cadence_quality + process_priority_class get
+    stamped onto the manifest at run-end. This is what the comparison
+    engine reads to refuse cross-run analyses across heterogeneous
+    cadence."""
+    paths = _make_paths(tmp_path)
+    cfg = Config(output_root=str(tmp_path), mode="support", duration=60,
+                 thresholds=Thresholds())
+    manifest_path = tmp_path / "manifest.json"
+    write_manifest(str(manifest_path), build_run_manifest(paths, cfg))
+
+    cq = {
+        "nominal_interval_seconds": 1.0,
+        "samples_total": 55,
+        "median_gap_seconds": 18.1,
+        "p95_gap_seconds": 27.5,
+        "max_gap_seconds": 30.4,
+        "gaps_over_2x_nominal": 54,
+        "gaps_over_5x_nominal": 49,
+        "cadence_health": "broken",
+        "ratio_median_to_nominal": 18.1,
+    }
+    update_manifest_end(
+        str(manifest_path),
+        ended_at=_dt.datetime(2026, 4, 23, 1, 1, 0),
+        stop_reason="duration_elapsed",
+        actual_duration=902.63,
+        cadence_quality=cq,
+        process_priority_class="HIGH",
+    )
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert data["cadence_quality"] == cq
+    assert data["process_priority_class"] == "HIGH"
 
 
 def test_mark_degraded_accumulates_entries(tmp_path: Path) -> None:

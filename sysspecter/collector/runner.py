@@ -11,6 +11,8 @@ Responsibilities:
 
 from __future__ import annotations
 
+import bisect
+import ctypes
 import datetime as _dt
 import os
 import signal
@@ -106,6 +108,128 @@ def _proc_map_from_snapshot(snap: list[dict[str, Any]]) -> dict[int, dict[str, A
     return {p["pid"]: p for p in snap if p.get("pid") is not None}
 
 
+# v3-priority-1: HIGH_PRIORITY_CLASS for the SysSpecter process. The
+# v2 production review showed cadence collapsed from 1 Hz to 1/18 Hz on
+# a 4-core / 16 GB host because the sampler couldn't get scheduled
+# fast enough under load. Bumping our own priority class is the
+# cheapest fix: only the SysSpecter process is elevated, no behaviour
+# change for the user's apps. Best-effort — soft-degrade if the OS
+# refuses (no admin, sandboxed, non-Windows).
+#
+# Constants from <winbase.h>:
+#   NORMAL_PRIORITY_CLASS      0x00000020
+#   HIGH_PRIORITY_CLASS        0x00000080
+#   ABOVE_NORMAL_PRIORITY_CLASS 0x00008000
+_PRIORITY_CLASSES: dict[int, str] = {
+    0x00000040: "IDLE",
+    0x00004000: "BELOW_NORMAL",
+    0x00000020: "NORMAL",
+    0x00008000: "ABOVE_NORMAL",
+    0x00000080: "HIGH",
+    0x00000100: "REALTIME",
+}
+
+
+def _set_high_priority_class(logger) -> str:
+    """Bump our own process to HIGH_PRIORITY_CLASS on Windows.
+
+    Returns the priority-class name actually achieved (one of
+    "HIGH", "ABOVE_NORMAL", "NORMAL", "UNCHANGED") so the runner can
+    record it in the manifest. Never raises.
+    """
+    if sys.platform != "win32":
+        return "UNCHANGED"
+    try:
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetCurrentProcess()
+        # Try HIGH first; fall back to ABOVE_NORMAL if HIGH refused
+        # (some EPM / lockdown profiles deny HIGH for non-admin).
+        for cls_value, cls_name in (
+            (0x00000080, "HIGH"),
+            (0x00008000, "ABOVE_NORMAL"),
+        ):
+            ok = kernel32.SetPriorityClass(handle, cls_value)
+            if ok:
+                logger.info("process priority class set to %s", cls_name)
+                return cls_name
+        logger.warning("SetPriorityClass refused both HIGH and ABOVE_NORMAL")
+        return "NORMAL"
+    except Exception as e:
+        logger.warning("could not set priority class: %s", e)
+        return "UNCHANGED"
+
+
+def _percentile(sorted_values: list[float], q: float) -> float:
+    """Nearest-rank percentile on a pre-sorted list. q in [0, 100]."""
+    if not sorted_values:
+        return 0.0
+    if q <= 0:
+        return sorted_values[0]
+    if q >= 100:
+        return sorted_values[-1]
+    # rank in [0, n-1]
+    rank = (q / 100.0) * (len(sorted_values) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    frac = rank - lo
+    return sorted_values[lo] + frac * (sorted_values[hi] - sorted_values[lo])
+
+
+def _summarise_cadence(
+    nominal_interval_s: float, gaps: list[float],
+) -> dict[str, Any]:
+    """Build the manifest.cadence_quality block from observed gaps.
+
+    Inputs:
+        nominal_interval_s: what the runner asked for (e.g. 1.0)
+        gaps: wall-clock seconds between consecutive system samples
+              (the first sample's gap is dropped — it has no predecessor).
+
+    Output describes the run's true cadence and flags drift. Consumers
+    (notably the comparison engine) use `cadence_health` to refuse
+    cross-run analyses across heterogeneous cadence quality.
+    """
+    real_gaps = [g for g in gaps if g > 0.0]
+    if not real_gaps:
+        return {
+            "nominal_interval_seconds": nominal_interval_s,
+            "samples_total": 0,
+            "median_gap_seconds": 0.0,
+            "p95_gap_seconds": 0.0,
+            "max_gap_seconds": 0.0,
+            "gaps_over_2x_nominal": 0,
+            "gaps_over_5x_nominal": 0,
+            "cadence_health": "no_data",
+            "ratio_median_to_nominal": 0.0,
+        }
+    s = sorted(real_gaps)
+    median = _percentile(s, 50.0)
+    p95 = _percentile(s, 95.0)
+    mx = s[-1]
+    threshold_2x = 2.0 * nominal_interval_s
+    threshold_5x = 5.0 * nominal_interval_s
+    over_2x = len(s) - bisect.bisect_left(s, threshold_2x)
+    over_5x = len(s) - bisect.bisect_left(s, threshold_5x)
+    ratio = median / nominal_interval_s if nominal_interval_s > 0 else 0.0
+    if ratio <= 1.5:
+        health = "good"
+    elif ratio <= 3.0:
+        health = "degraded"
+    else:
+        health = "broken"
+    return {
+        "nominal_interval_seconds": nominal_interval_s,
+        "samples_total": len(real_gaps) + 1,  # +1 for the first sample (no gap)
+        "median_gap_seconds": round(median, 3),
+        "p95_gap_seconds": round(p95, 3),
+        "max_gap_seconds": round(mx, 3),
+        "gaps_over_2x_nominal": over_2x,
+        "gaps_over_5x_nominal": over_5x,
+        "cadence_health": health,
+        "ratio_median_to_nominal": round(ratio, 2),
+    }
+
+
 def run_monitor(config: Config) -> str:
     """Run one monitoring session. Returns path to the run folder."""
     global _stop_requested
@@ -187,6 +311,11 @@ def run_monitor(config: Config) -> str:
     prev_proc_map = _proc_map_from_snapshot(start_procs)
     prev_services = start_services
 
+    # v3-priority-1: bump our priority before the loop. Helps weak
+    # hosts hit cadence under load. Result is recorded in the manifest
+    # so the comparison engine can attribute cadence drift correctly.
+    priority_class = _set_high_priority_class(logger)
+
     started_mono = time.monotonic()
     started_wall = time.time()
     next_tick = started_mono
@@ -198,6 +327,11 @@ def run_monitor(config: Config) -> str:
 
     stop_reason = "completed"
     sample_count = 0
+    # v3-priority-1: track every observed gap so we can write a
+    # cadence_quality block to the manifest at run-end. The first
+    # sample's gap is 0.0 (no predecessor) — _summarise_cadence
+    # filters that out.
+    observed_gaps: list[float] = []
 
     _print_start_banner(paths, config)
 
@@ -216,7 +350,11 @@ def run_monitor(config: Config) -> str:
                 stop_reason = "duration_reached"
                 break
 
-            sys_sample = collect_system_sample(started_mono)
+            # v3-priority-1: pass next_tick so collect_system_sample
+            # can compute sample_late_ms (= how late this tick fired
+            # vs. the schedule). Without this, late_ms is always 0.
+            sys_sample = collect_system_sample(started_mono, scheduled_at=next_tick)
+            observed_gaps.append(sys_sample.gap_seconds)
             system_csv.write(system_sample_to_dict(sys_sample))
             # H5: emit one per-core row per sample. Same timestamp /
             # rel_seconds keys so a join recovers the system context.
@@ -368,7 +506,25 @@ def run_monitor(config: Config) -> str:
                 mark_degraded(paths.manifest, "event_logs",
                               f"query failed: {type(e).__name__}: {e}")
 
-        update_manifest_end(paths.manifest, ended_at, stop_reason, actual_duration)
+        # v3-priority-1: stamp the cadence-quality block onto the
+        # manifest so consumers (especially the comparison engine)
+        # can refuse cross-run analyses across heterogeneous cadence.
+        cadence_quality = _summarise_cadence(config.interval, observed_gaps)
+        if cadence_quality["cadence_health"] != "good":
+            logger.warning(
+                "cadence drift detected: median %.1fs vs nominal %.1fs (health=%s, "
+                "%d/%d gaps over 2× nominal)",
+                cadence_quality["median_gap_seconds"],
+                cadence_quality["nominal_interval_seconds"],
+                cadence_quality["cadence_health"],
+                cadence_quality["gaps_over_2x_nominal"],
+                cadence_quality["samples_total"],
+            )
+        update_manifest_end(
+            paths.manifest, ended_at, stop_reason, actual_duration,
+            cadence_quality=cadence_quality,
+            process_priority_class=priority_class,
+        )
 
         # Field-review D3: phase3 in the manifest records what was
         # REQUESTED. Stamp a parallel phase3_captured block recording

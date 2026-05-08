@@ -164,6 +164,13 @@ class SystemSample:
     # consumer can use this to distinguish "system idle" from "we
     # missed it" when reading the timeline.
     sample_late_ms: float
+    # Wall-clock seconds since the previous sample completed (raw, not
+    # clamped). Independent of the manifest's nominal interval — when
+    # this drifts above 2× the nominal interval the sampler is falling
+    # behind. Comparison engines use this to refuse cross-run analyses
+    # whose underlying sample distributions differ. The first sample's
+    # gap is 0.0. Field-review v3-priority-1 (S1+S3).
+    gap_seconds: float
 
 
 _last_cpu_stats: tuple[float, int, int] | None = None
@@ -290,8 +297,12 @@ def collect_system_sample(
 
     if _last_ts is None:
         dt = 1.0
+        gap_s = 0.0
     else:
         dt = max(now_mono - _last_ts, 1e-3)
+        # Raw gap (not clamped) — visibility into back-pressure even
+        # when dt was clamped above for the rate math.
+        gap_s = max(0.0, now_mono - _last_ts)
 
     if _last_disk is None:
         d_read_bps = d_write_bps = d_read_cps = d_write_cps = 0.0
@@ -358,6 +369,7 @@ def collect_system_sample(
         net_dropin_per_sec=round(din, 2),
         net_dropout_per_sec=round(dout, 2),
         sample_late_ms=round(late_ms, 1),
+        gap_seconds=round(gap_s, 3),
     )
 
 

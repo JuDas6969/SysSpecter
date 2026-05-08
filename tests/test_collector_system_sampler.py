@@ -139,3 +139,78 @@ def test_disk_totals_handles_none_return() -> None:
                return_value=None):
         result = ss._disk_totals()
         assert result == (0.0, 0.0, 0.0, 0.0, 0, 0)
+
+
+# v3-priority-1 (S1+S3): cadence visibility — sample_late_ms and gap_seconds.
+
+def test_first_sample_has_zero_gap_and_zero_late_when_unscheduled() -> None:
+    """First sample has no predecessor so gap_seconds is 0.0. Without a
+    `scheduled_at` argument, sample_late_ms is also 0.0."""
+    ss._last_disk = None
+    ss._last_net = None
+    ss._last_ts = None
+    ss._last_cpu_stats = None
+
+    sample = ss.collect_system_sample(time.monotonic())
+
+    assert sample.gap_seconds == 0.0
+    assert sample.sample_late_ms == 0.0
+
+
+def test_second_sample_has_positive_gap() -> None:
+    """Second sample's gap_seconds reflects wall-clock since the first."""
+    ss._last_disk = None
+    ss._last_net = None
+    ss._last_ts = None
+    ss._last_cpu_stats = None
+
+    started = time.monotonic()
+    ss.collect_system_sample(started)
+    time.sleep(0.05)
+    sample = ss.collect_system_sample(started)
+
+    # 50 ms sleep — gap should be at least 30 ms, well under 1 s.
+    assert 0.03 <= sample.gap_seconds <= 1.0
+
+
+def test_late_ms_reports_lateness_vs_schedule() -> None:
+    """When the runner passes a `scheduled_at` from the past, the sample
+    must report the gap as sample_late_ms in milliseconds. This is the
+    field the v2 production review found silently missing on real runs
+    because the runner was not passing scheduled_at at all."""
+    ss._last_disk = None
+    ss._last_net = None
+    ss._last_ts = None
+    ss._last_cpu_stats = None
+
+    started = time.monotonic()
+    # Simulate a tick that should have fired 200 ms ago.
+    scheduled = time.monotonic() - 0.200
+    sample = ss.collect_system_sample(started, scheduled_at=scheduled)
+
+    # 200 ms ± wallclock noise; the test machine has to be reasonably
+    # quiet but a 50-300 ms band keeps it stable.
+    assert 50.0 <= sample.sample_late_ms <= 800.0
+
+
+def test_sample_to_dict_includes_new_cadence_fields() -> None:
+    """Schema gate: sample_to_dict must produce sample_late_ms and
+    gap_seconds keys. Without this the CSV writer would silently drop
+    them (DictWriter `extrasaction=ignore`) — exactly the bug we're
+    fixing in v3."""
+    ss._last_disk = None
+    ss._last_net = None
+    ss._last_ts = None
+
+    row = ss.sample_to_dict(ss.collect_system_sample(time.monotonic()))
+    assert "sample_late_ms" in row
+    assert "gap_seconds" in row
+
+
+def test_csv_system_fields_include_cadence_columns() -> None:
+    """Pin the CSV header. The v2 review surfaced that sample_late_ms
+    was computed but never made it to the file — DictWriter silently
+    dropped it because SYSTEM_FIELDS didn't list it. Lock this down."""
+    from sysspecter.reporter.csv_export import SYSTEM_FIELDS
+    assert "sample_late_ms" in SYSTEM_FIELDS
+    assert "gap_seconds" in SYSTEM_FIELDS

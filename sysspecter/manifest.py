@@ -77,12 +77,32 @@ def update_manifest_end(
     ended_at: _dt.datetime,
     stop_reason: str,
     actual_duration: float,
+    *,
+    cadence_quality: dict[str, Any] | None = None,
+    process_priority_class: str | None = None,
 ) -> None:
+    """Stamp end-of-run metadata onto the manifest.
+
+    `cadence_quality` (v3-priority-1, S1+S3) describes the run's
+    actual sample cadence vs. the nominal interval. Comparison engines
+    use it to refuse cross-run analyses across heterogeneous cadence
+    quality. Optional so legacy / test call sites that don't supply it
+    still work.
+
+    `process_priority_class` (v3-priority-1) records what the
+    collector achieved when it tried to bump itself to HIGH —
+    "HIGH" / "ABOVE_NORMAL" / "NORMAL" / "UNCHANGED". Useful when
+    diagnosing why a particular run had bad cadence.
+    """
     with open(manifest_path, encoding="utf-8") as f:
         data = json.load(f)
     data["ended_at"] = ended_at.isoformat(timespec="seconds")
     data["stop_reason"] = stop_reason
     data["duration_actual_seconds"] = round(actual_duration, 2)
+    if cadence_quality is not None:
+        data["cadence_quality"] = cadence_quality
+    if process_priority_class is not None:
+        data["process_priority_class"] = process_priority_class
     tmp = manifest_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)

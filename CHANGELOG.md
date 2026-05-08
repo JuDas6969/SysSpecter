@@ -6,6 +6,44 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (v3-priority-1: cadence visibility — S1 + S3)
+
+The v2 production-test review on ATLT4407 (HP EliteBook 840 G8 / i5-1145G7
+/ 16 GB) showed the sampler silently drifted from a nominal 1 Hz to a
+**median 18 s gap** under a corporate-managed laptop's load profile,
+while the manifest still claimed `interval_seconds: 1.0`. A consumer
+reading the manifest would compute averages assuming 902 samples and
+find 55. This release closes that trust-contract gap.
+
+- **`sample_late_ms` and `gap_seconds` columns** added to
+  `timeline_system.csv`. The `sample_late_ms` field had been computed
+  on the dataclass since v1.1.0 (S3) but was silently dropped at the
+  CSV writer because `SYSTEM_FIELDS` didn't list it. `gap_seconds` is
+  the wall-clock between consecutive samples — answers a different
+  question from `sample_late_ms` (drift vs. preemption).
+- **Runner now passes `scheduled_at=next_tick`** to
+  `collect_system_sample`. Without this, `sample_late_ms` was always
+  0 even when ticks were chronically late.
+- **`cadence_quality` block** added to `manifest.json` at run-end.
+  Fields: `nominal_interval_seconds`, `samples_total`,
+  `median_gap_seconds`, `p95_gap_seconds`, `max_gap_seconds`,
+  `gaps_over_2x_nominal`, `gaps_over_5x_nominal`, `cadence_health`
+  (`good` / `degraded` / `broken` / `no_data`),
+  `ratio_median_to_nominal`. Comparison engines use this to refuse
+  cross-run analyses across heterogeneous cadence quality.
+- **HIGH_PRIORITY_CLASS** set on the SysSpecter process at runner
+  start (Windows). Falls back to ABOVE_NORMAL, then NORMAL, then
+  UNCHANGED if the OS denies the bump (e.g. EPM lockdown). Achieved
+  level recorded as `process_priority_class` in the manifest.
+- **`update_manifest_end`** gained two optional kwargs
+  (`cadence_quality`, `process_priority_class`) — fully back-compat:
+  callers that don't supply them get the v1.1.0 behaviour and the
+  manifest stays free of stale keys.
+
+Schema unchanged (`schema_version: 2` — purely additive). CSV loaders
+unaffected (DictReader reads by header name). 359 unit tests, ruff
+clean, bandit clean.
+
 ## [1.1.0] — 2026-05-08
 
 This release closes out the production-use field-review audit

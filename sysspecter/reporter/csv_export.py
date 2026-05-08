@@ -20,6 +20,13 @@ SYSTEM_FIELDS = [
     "net_packets_sent_per_sec", "net_packets_recv_per_sec",
     "net_errin_per_sec", "net_errout_per_sec",
     "net_dropin_per_sec", "net_dropout_per_sec",
+    # v3-priority-1 (S1+S3): cadence visibility. `sample_late_ms` is
+    # how late this tick fired vs. its scheduled time; `gap_seconds`
+    # is the wall-clock between this and the previous sample. Both
+    # are needed because they answer different questions: late_ms
+    # reveals scheduler preemption, gap_seconds reveals overall
+    # cadence drift independent of the schedule.
+    "sample_late_ms", "gap_seconds",
 ]
 
 PROCESS_FIELDS = [
