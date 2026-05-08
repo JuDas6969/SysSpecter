@@ -64,6 +64,14 @@ GPU_ADAPTER_FIELDS = [
     "temperature_c", "power_w", "mem_used_mb", "mem_total_mb", "utilization_pct",
 ]
 
+# Field-review H5: per-core CPU as a separate long-format file. The
+# legacy `cpu_per_core_pct` semicolon blob in timeline_system.csv is
+# painful to query; this file gives one row per (sample, core) so
+# pandas / SQL / Excel can group by core trivially.
+PER_CORE_FIELDS = [
+    "timestamp", "rel_seconds", "core_idx", "cpu_pct",
+]
+
 
 class StreamingCSV:
     def __init__(self, path: str, fields: list[str]):

@@ -76,11 +76,47 @@ def test_sample_to_dict_has_expected_keys() -> None:
 
 
 def test_freq_mhz_handles_psutil_unavailable() -> None:
-    """psutil.cpu_freq() can raise on some virtualized hardware; we must
+    """When BOTH NtPowerInformation and psutil.cpu_freq are unavailable
+    (e.g. heavily-sandboxed Windows or non-Windows), _freq_mhz must
     return None rather than bubble up."""
-    with patch("sysspecter.collector.system_sampler.psutil.cpu_freq",
-               side_effect=OSError("not available")):
+    with (
+        patch("sysspecter.collector.system_sampler._cpu_freq_via_ntpower",
+              return_value=(None, None, None)),
+        patch("sysspecter.collector.system_sampler.psutil.cpu_freq",
+              side_effect=OSError("not available")),
+    ):
         assert ss._freq_mhz() is None
+
+
+def test_freq_mhz_prefers_ntpower_peak_over_psutil() -> None:
+    """Field-review B4: when NtPowerInformation reports a turbo-boosted
+    core (e.g. 5200 MHz on an i7-13800H whose nominal is 2500 MHz),
+    we must surface the boosted value — not the nominal P-state value
+    psutil would return."""
+    with (
+        patch("sysspecter.collector.system_sampler._cpu_freq_via_ntpower",
+              return_value=(5200.0, 3700.0, 5200.0)),
+        # psutil shouldn't even be called, but if it were it would
+        # return the (broken) nominal — make the divergence loud.
+        patch("sysspecter.collector.system_sampler.psutil.cpu_freq",
+              return_value=type("F", (), {"current": 2500.0,
+                                          "min": 0.0, "max": 5200.0})()),
+    ):
+        assert ss._freq_mhz() == 5200.0
+
+
+def test_freq_mhz_falls_back_when_ntpower_fails() -> None:
+    """If powrprof is missing, we still get a number — even if it's
+    the broken WMI value, that's better than None for the rest of the
+    pipeline."""
+    with (
+        patch("sysspecter.collector.system_sampler._cpu_freq_via_ntpower",
+              return_value=(None, None, None)),
+        patch("sysspecter.collector.system_sampler.psutil.cpu_freq",
+              return_value=type("F", (), {"current": 2500.0,
+                                          "min": 0.0, "max": 5200.0})()),
+    ):
+        assert ss._freq_mhz() == 2500.0
 
 
 def test_disk_totals_handles_psutil_unavailable() -> None:

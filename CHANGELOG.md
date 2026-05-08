@@ -8,6 +8,30 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed (data correctness — from production-use review)
 
+- **B4**: `cpu_freq_current_mhz` no longer reads WMI's nominal P-state
+  (which capped at 1532 / 2500 MHz on an i7-13800H even at full turbo).
+  The sampler now calls `CallNtPowerInformation(ProcessorInformation)`
+  via ctypes, queries every logical CPU, and reports
+  `max(CurrentMhz)` — so any single-core boost is captured. Falls
+  back to `psutil.cpu_freq()` only on locked-down hosts where
+  `powrprof.dll` is unavailable.
+
+### Added
+
+- **D3 / H4**: `manifest.phase3_captured` block alongside the existing
+  `phase3` (request) block. Records what actually produced data:
+  `process_events`, `service_events`, `event_logs`, `etw_disk`,
+  `gpu_engine`, `gpu_process`, `gpu_adapter`. Distinguishes "feature
+  was off" from "feature was on but produced an empty file" — the
+  field-review noted these were indistinguishable before.
+- **H5**: `timeline_per_core.csv` long-format file (columns
+  `timestamp, rel_seconds, core_idx, cpu_pct`). Replaces the
+  semicolon-blob workflow when analyzing core pinning, hybrid-CPU
+  scheduling, or HT behaviour. The legacy `cpu_per_core_pct` column
+  in `timeline_system.csv` stays for backwards compatibility.
+
+### Fixed (data correctness — from production-use review)
+
 - **B1**: `scores.json` and `findings.json` now both carry an
   `analysis_window` block — single source of truth for "what was
   actually analyzed". Resolves the three-way duration ambiguity where

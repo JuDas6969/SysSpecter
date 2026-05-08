@@ -61,14 +61,27 @@ def test_monitor_5_seconds_produces_report(tmp_path: Path) -> None:
 
     # Must-have artefacts.
     for name in ("manifest.json", "final_report.html", "findings.json",
-                 "scores.json", "timeline_system.csv", "static_snapshot.json"):
+                 "scores.json", "timeline_system.csv", "static_snapshot.json",
+                 "timeline_per_core.csv"):
         assert (run / name).exists(), f"missing artefact: {name}"
+
+    # H5: per-core CSV is long-format (one row per (sample, core)).
+    pc_lines = (run / "timeline_per_core.csv").read_text(encoding="utf-8").splitlines()
+    assert pc_lines[0] == "timestamp,rel_seconds,core_idx,cpu_pct"
+    assert len(pc_lines) > 1, "per-core CSV must contain at least one data row"
 
     # Manifest is structurally valid + clean-stop.
     manifest = json.loads((run / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] >= 2
     assert manifest["stop_reason"] in ("duration_reached", "duration_elapsed",
                                        "manual_stop")
+
+    # D3: phase3_captured block reflects what actually got data.
+    # (Phase 3 was not requested for this baseline-mode run, so all
+    # captured flags must be False.)
+    assert "phase3_captured" in manifest, "manifest must carry phase3_captured"
+    assert manifest["phase3_captured"]["etw_disk"] is False
+    assert manifest["phase3_captured"]["event_logs"] is False
     assert manifest["duration_actual_seconds"] >= 4.0
     assert not manifest.get("aborted", False), "run flagged as aborted"
 

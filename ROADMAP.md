@@ -302,9 +302,10 @@ tool produced. Numbering is the ID used in the field-review document.
   that downstream consumers (HTML report, comparison, splitter) read
   as the single source of truth. Contract pinned in
   `tests/test_analysis_window.py`.
-- [ ] **B4** — `cpu_freq_current_mhz` reads WMI nominal P-state, never
-  reflects turbo. Replace with `\Processor Information(*)\% Processor
-  Performance` × base-clock, or `CallNtPowerInformation`. **Open.**
+- [x] **B4** — `cpu_freq_current_mhz` now reads
+  `CallNtPowerInformation(ProcessorInformation)` across all logical
+  CPUs and reports `max(CurrentMhz)` so single-core turbo is captured.
+  Falls back to psutil only when powrprof is unavailable.
 - [x] **B5** — `disk_active_pct_est` documented as estimate (rename
   deferred — touches 18 files including golden test fixtures).
 
@@ -323,9 +324,12 @@ tool produced. Numbering is the ID used in the field-review document.
 - [ ] **H2** — managed-runtime metrics (.NET, JVM, Python). ETW
   `Microsoft-Windows-DotNETRuntime` for .NET; `\.NET CLR Memory(*)`
   perfcounters as MVP. **Open.**
-- [ ] **H4** — `process_events.json` always-on instead of opt-in. **Open.**
-- [ ] **H5** — per-core CPU as separate file or 20 columns instead of
-  semicolon blob. **Open.**
+- [x] **H4** — `process_events.json` was already always-on; the actual
+  D3 issue (manifest.phase3 reflects request, not capture) is fixed
+  by stamping `phase3_captured` from artefact-walk at finalisation.
+- [x] **H5** — `timeline_per_core.csv` ships per run in long-format
+  (timestamp / rel_seconds / core_idx / cpu_pct). Legacy semicolon
+  blob in timeline_system.csv kept for backwards compatibility.
 - [ ] **H6** — `cpu_user_pct` / `cpu_system_pct` as per-sample deltas
   alongside cumulative. **Open.**
 - [ ] **H7** — CPU package power + temperature (Intel RAPL via MSR or

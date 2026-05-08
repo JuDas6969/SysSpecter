@@ -35,6 +35,7 @@ from ..reporter.csv_export import (
     GPU_PROCESS_FIELDS,
     LATENCY_FIELDS,
     NETWORK_FIELDS,
+    PER_CORE_FIELDS,
     PROCESS_FIELDS,
     SYSTEM_FIELDS,
     StreamingCSV,
@@ -150,11 +151,14 @@ def run_monitor(config: Config) -> str:
     network_csv = StreamingCSV(paths.timeline_network_csv, NETWORK_FIELDS)
     latency_csv = StreamingCSV(paths.timeline_latency_csv, LATENCY_FIELDS)
     connections_csv = StreamingCSV(paths.timeline_connections_csv, CONNECTIONS_FIELDS)
+    # H5: long-format per-core CPU stream alongside the system timeline.
+    per_core_csv = StreamingCSV(paths.timeline_per_core_csv, PER_CORE_FIELDS)
     system_csv.open()
     process_csv.open()
     network_csv.open()
     latency_csv.open()
     connections_csv.open()
+    per_core_csv.open()
 
     # Phase 3 optional streams
     gpu_engine_csv = gpu_process_csv = gpu_adapter_csv = None
@@ -214,6 +218,15 @@ def run_monitor(config: Config) -> str:
 
             sys_sample = collect_system_sample(started_mono)
             system_csv.write(system_sample_to_dict(sys_sample))
+            # H5: emit one per-core row per sample. Same timestamp /
+            # rel_seconds keys so a join recovers the system context.
+            for idx, core_pct in enumerate(sys_sample.cpu_per_core_pct):
+                per_core_csv.write({
+                    "timestamp": sys_sample.timestamp,
+                    "rel_seconds": sys_sample.rel_seconds,
+                    "core_idx": idx,
+                    "cpu_pct": round(float(core_pct), 1),
+                })
 
             maybe_refresh_candidates(config.target_pid, config.target_name, config.target_path)
             proc_samples = collect_process_sample(
@@ -321,6 +334,7 @@ def run_monitor(config: Config) -> str:
         network_csv.close()
         latency_csv.close()
         connections_csv.close()
+        per_core_csv.close()
         if gpu_engine_csv is not None:
             gpu_engine_csv.close()
             gpu_process_csv.close()
@@ -355,6 +369,18 @@ def run_monitor(config: Config) -> str:
                               f"query failed: {type(e).__name__}: {e}")
 
         update_manifest_end(paths.manifest, ended_at, stop_reason, actual_duration)
+
+        # Field-review D3: phase3 in the manifest records what was
+        # REQUESTED. Stamp a parallel phase3_captured block recording
+        # what actually produced data, so consumers don't have to
+        # re-walk the folder to know whether the file is just empty
+        # or simply was never produced.
+        try:
+            from ..manifest import stamp_phase3_captured
+            captured = stamp_phase3_captured(paths.run_dir)
+            logger.info("phase3 captured map: %s", captured)
+        except Exception as e:
+            logger.warning("phase3_captured stamping failed: %s", e)
 
     print("  Analysiere Daten und baue Report...", flush=True)
     logger.info("running analysis + reports...")

@@ -49,6 +49,63 @@ def _commit_charge() -> tuple[int | None, int | None]:
         _log.debug("GlobalMemoryStatusEx failed", exc_info=True)
     return None, None
 
+
+# ---- CallNtPowerInformation for real per-CPU current frequency --------
+# Field-review B4: WMI's CurrentClockSpeed (which psutil.cpu_freq reads
+# via the same registry path) reports the chipset's NOMINAL P-state and
+# never reflects turbo on modern parts — every value across six runs on
+# an i7-13800H read 1532 / 2500 MHz, never the 5.2 GHz the silicon
+# was actually running at. The kernel-power API exposes per-logical-CPU
+# CurrentMhz, which DOES reflect P-state changes including turbo.
+# Reporting `max(CurrentMhz)` across all logical CPUs catches even
+# single-core boosts that a single-CPU read would miss.
+
+class _PROCESSOR_POWER_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("Number", wintypes.ULONG),
+        ("MaxMhz", wintypes.ULONG),
+        ("CurrentMhz", wintypes.ULONG),
+        ("MhzLimit", wintypes.ULONG),
+        ("MaxIdleState", wintypes.ULONG),
+        ("CurrentIdleState", wintypes.ULONG),
+    ]
+
+
+_PROCESSOR_INFORMATION = 11  # ProcessorInformation enum value
+_STATUS_SUCCESS = 0
+
+
+def _cpu_freq_via_ntpower() -> tuple[float | None, float | None, float | None]:
+    """Return (peak_current_mhz, avg_current_mhz, max_documented_mhz)
+    across all logical CPUs, or (None, None, None) on failure.
+
+    `peak_current_mhz` is what we surface as the timeline's primary
+    frequency value: max CurrentMhz across all logical CPUs at this
+    instant, so any single-core turbo boost is captured.
+    """
+    try:
+        n_cpus = psutil.cpu_count(logical=True) or 1
+        arr_t = _PROCESSOR_POWER_INFORMATION * n_cpus
+        arr = arr_t()
+        rc = ctypes.windll.powrprof.CallNtPowerInformation(
+            _PROCESSOR_INFORMATION, None, 0,
+            ctypes.byref(arr), ctypes.sizeof(arr_t),
+        )
+    except Exception:
+        _log.debug("CallNtPowerInformation unavailable", exc_info=True)
+        return None, None, None
+    if rc != _STATUS_SUCCESS:
+        _log.debug("CallNtPowerInformation rc=%s", rc)
+        return None, None, None
+    current = [int(c.CurrentMhz) for c in arr if c.CurrentMhz > 0]
+    max_vals = [int(c.MaxMhz) for c in arr if c.MaxMhz > 0]
+    if not current:
+        return None, None, None
+    peak = float(max(current))
+    avg = float(sum(current)) / len(current)
+    max_doc = float(max(max_vals)) if max_vals else None
+    return peak, avg, max_doc
+
 _last_disk: dict[str, Any] | None = None
 _last_net: dict[str, Any] | None = None
 _last_ts: float | None = None
@@ -60,10 +117,11 @@ class SystemSample:
     rel_seconds: float
     cpu_total_pct: float
     cpu_per_core_pct: list[float]
-    # WMI's CurrentClockSpeed is the chipset's nominal P-state — it
-    # never reflects turbo boost on modern Intel/AMD parts. Treat as a
-    # rough indicator only; see ROADMAP.md "B4" for the proper fix
-    # (PerformanceCounter `% Processor Performance` × base clock).
+    # Peak CurrentMhz across all logical CPUs from the kernel-power
+    # API (CallNtPowerInformation). Reflects turbo boost on at least
+    # one core when any core is boosting. Field-review B4-fixed; the
+    # legacy WMI / psutil.cpu_freq path that capped at the nominal
+    # P-state is no longer used.
     cpu_freq_current_mhz: float | None
     ctx_switches_per_sec: float | None
     interrupts_per_sec: float | None
@@ -144,11 +202,21 @@ def _cpu_stats_rates() -> tuple[float | None, float | None]:
 
 
 def _freq_mhz() -> float | None:
+    """Return the peak CurrentMhz across all logical CPUs.
+
+    Falls back to psutil.cpu_freq() (which reads WMI's nominal value)
+    only when CallNtPowerInformation is unavailable — e.g. inside very
+    locked-down sandboxes that block powrprof.dll. The fall-back is
+    documented as a known soft-degrade.
+    """
+    peak, _avg, _max_doc = _cpu_freq_via_ntpower()
+    if peak is not None:
+        return peak
     try:
         f = psutil.cpu_freq()
         return float(f.current) if f else None
     except Exception:
-        _log.debug("cpu_freq unavailable", exc_info=True)
+        _log.debug("cpu_freq fallback unavailable", exc_info=True)
         return None
 
 

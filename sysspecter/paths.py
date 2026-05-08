@@ -67,6 +67,11 @@ class RunPaths:
         return os.path.join(self.run_dir, "timeline_gpu_adapter.csv")
 
     @property
+    def timeline_per_core_csv(self) -> str:
+        # Field-review H5: long-format per-core CPU timeline.
+        return os.path.join(self.run_dir, "timeline_per_core.csv")
+
+    @property
     def event_log_json(self) -> str:
         return os.path.join(self.run_dir, "event_log.json")
 

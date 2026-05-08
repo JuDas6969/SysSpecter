@@ -130,6 +130,67 @@ def _last_rel_seconds_in_csv(csv_path: str) -> float | None:
     return last
 
 
+def stamp_phase3_captured(run_dir: str) -> dict[str, bool]:
+    """Walk the finished run folder and stamp a `phase3_captured` block
+    onto the manifest reflecting what actually produced data — distinct
+    from `phase3` which records what was *requested*. Field-review D3.
+
+    Returns the captured map for callers that want to log it.
+    """
+    manifest_path = os.path.join(run_dir, "manifest.json")
+    if not os.path.exists(manifest_path):
+        return {}
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    def _file_has_data(name: str) -> bool:
+        p = os.path.join(run_dir, name)
+        if not os.path.exists(p):
+            return False
+        try:
+            if p.endswith(".json"):
+                with open(p, encoding="utf-8") as f:
+                    payload = json.load(f)
+                if isinstance(payload, list):
+                    return len(payload) > 0
+                if isinstance(payload, dict):
+                    if not payload:
+                        return False
+                    # Reject the "{enabled: false}" placeholder writers
+                    # use to signal "feature was off".
+                    if list(payload.keys()) == ["enabled"] and not payload["enabled"]:
+                        return False
+                    return True
+                return True
+            # CSVs: more than the header line counts as "has data".
+            with open(p, encoding="utf-8", newline="") as f:
+                lines = f.readlines()
+            return len(lines) > 1
+        except (OSError, json.JSONDecodeError):
+            return False
+
+    captured = {
+        "process_events": _file_has_data("process_events.json"),
+        "service_events": _file_has_data("service_events.json"),
+        "event_logs": _file_has_data("event_log.json"),
+        "etw_disk": _file_has_data("etw_disk_summary.json"),
+        "gpu_engine": _file_has_data("timeline_gpu_engine.csv"),
+        "gpu_process": _file_has_data("timeline_gpu_process.csv"),
+        "gpu_adapter": _file_has_data("timeline_gpu_adapter.csv"),
+    }
+
+    data["phase3_captured"] = captured
+
+    tmp = manifest_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, manifest_path)
+    return captured
+
+
 def repair_manifest_if_aborted(run_dir: str) -> bool:
     """If the manifest has no ended_at (run was killed hard), infer end from artifacts.
 
