@@ -6,6 +6,56 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-05-08
+
+This release closes out the production-use field-review audit
+(26/26 items shipped). Headlines below; the per-item changelog
+sits under each ID.
+
+**Data correctness (B-block, 5/5)** — three-way duration ambiguity
+resolved (B1), commit charge populated (B2), PDH counter rollover
+guarded (B3), CPU frequency reads turbo via `CallNtPowerInformation`
+(B4), `disk_active_pct_est` documented (B5).
+
+**Schema additions (H-block, 5/5)** — `ppid` + `parent_name` in
+process timeline (H3), `phase3_captured` reflects what actually
+fired (H4/D3), per-core CPU as long-format CSV (H5),
+`num_page_faults` per process (H9), `sample_late_ms` records
+sampler back-pressure (S3).
+
+**Engine reife (A-block, 6/6)** — sliding-window leak detection
+(A1), deadlock-after-leak signature (A2), periodic-pattern
+detection by autocorrelation (A3), process-tree visual (A4),
+cross-run aggregation view (A5), cap-window-aware scoring (A6).
+
+**Cross-domain (C-block, 5/5)** — stack-aware leak thresholds (C1),
+process catalog with EDR/AV/VPN/MDM coverage (C2), machine-class
+baselines (C3), capture profiles (C4), platform abstraction
+layer (C5).
+
+**Multi-tenant (M-block, 4/4)** — privacy redaction at capture
+with stable hashes (M1), structured fleet metadata (M2), fleet
+aggregation tool (M3), stable machine_id (M5 incl. SID tier).
+
+**Foundations** — silent-except audit, dev-deps pinned,
+SECURITY.md + CONTRIBUTING.md, pre-commit, E2E smoketest,
+22 collector safety-net tests, JSON-Lines-ready heartbeat,
+typography hierarchy, focus styles, progressive disclosure
+in Monitor tab.
+
+341 unit tests, ruff clean, bandit clean. Single-file portable
+EXE under `dist/SysSpecter.exe`.
+
+**Release-audit fix** — `process_catalog.catalog()` deadlocked on its
+own first cold call because `Lock` was non-reentrant (caller already
+held the lock when invoking `reload()`). Caught while running the
+release-gate test suite; fixed by switching to `RLock` and pinned with
+a regression test (`test_catalog_first_call_does_not_deadlock`).
+
+See full per-ID detail below.
+
+
+
 ### Fixed (data correctness — from production-use review)
 
 - **B4**: `cpu_freq_current_mhz` no longer reads WMI's nominal P-state
@@ -447,5 +497,6 @@ comparison tool, session splitter, and per-run HTML report.
 - Scoring heuristics are documented but not machine-learned; they are
   deliberately conservative and explainable rather than optimised.
 
-[Unreleased]: /compare/v1.0.0...HEAD
+[Unreleased]: /compare/v1.1.0...HEAD
+[1.1.0]: /releases/tag/v1.1.0
 [1.0.0]: /releases/tag/v1.0.0
