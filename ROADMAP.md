@@ -414,7 +414,13 @@ tool produced. Numbering is the ID used in the field-review document.
   CLI flags override profile defaults; active profile stamped into
   `manifest.meta.capture_profile`. GUI Monitor-tab presets are
   generated from the same catalog (single source of truth).
-- [ ] **C5** — cross-platform abstraction (ETW / eBPF / dtrace).
+- [x] **C5** — `sysspecter/platforms/` package introduces a
+  `Platform` ABC; Windows implementation delegates to existing
+  helpers, POSIX stub returns honest defaults. Four duplicated
+  `IsUserAnAdmin()` blocks consolidated. `compute_machine_id()`
+  reaches its primitives through the ABC. Sampler ABC for collector-
+  tier cross-platform (eBPF / dtrace) is a future ADR per
+  collector. See ADR-0006.
 
 ### Multi-tenant / fleet
 

@@ -7,7 +7,6 @@ with `clear_status()`.
 
 from __future__ import annotations
 
-import ctypes
 import os
 import tkinter as tk
 from tkinter import ttk
@@ -17,10 +16,9 @@ from ...theme import COLORS, TYPOGRAPHY
 
 
 def _is_admin() -> bool:
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
-    except Exception:
-        return False
+    # Field-review C5: route through the cross-platform ABC.
+    from ...platforms import platform
+    return platform().is_admin()
 
 
 class StatusBar(ttk.Frame):

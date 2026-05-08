@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv as _csv
-import ctypes
 import datetime as _dt
 import json
 import os
@@ -18,10 +17,11 @@ from .paths import RunPaths
 
 
 def is_admin() -> bool:
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
+    """Field-review C5: route the privilege check through the
+    cross-platform ABC so a future POSIX implementation lands here
+    without touching the manifest builder."""
+    from .platforms import platform
+    return platform().is_admin()
 
 
 def build_run_manifest(paths: RunPaths, config: Config) -> dict[str, Any]:

@@ -18,6 +18,24 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **C5** (cross-platform abstraction): new `sysspecter/platforms/`
+  package introduces a `Platform` ABC for OS-specific calls. Today
+  it has one concrete implementation (`WindowsPlatform`) plus a
+  stub (`PosixPlatform`) for Linux / macOS that returns `None` for
+  Windows-only signals (SMBIOS UUID, Machine SID) and uses stdlib
+  `os.geteuid` for admin detection. The four duplicated
+  `IsUserAnAdmin()` blocks in `manifest.py`, `doctor.py`,
+  `gui/components/status_bar.py`, `gui/tab_monitor.py` now all
+  flow through `platforms.platform().is_admin()` — single point
+  of truth instead of four. `compute_machine_id()` reaches its
+  three primitives through the ABC, so a future POSIX collector
+  tier can ship a real Linux / macOS machine_id without touching
+  the resolver. Architecture pinned in
+  [ADR-0006](docs/adr/0006-cross-platform-architecture.md). 17
+  contract tests in `tests/test_platforms.py` cover factory caching,
+  `set_platform` / `reset_platform`, Windows delegation, POSIX
+  fallback semantics, and the M5 contract preservation.
+
 - **A5** (cross-run aggregation view): `sysspecter compare` already
   shipped auto-mode-detection + HW/SW diff + evidence-based
   recommendations, but it didn't use any of the new schema fields

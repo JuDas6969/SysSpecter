@@ -7,7 +7,6 @@ required check fails (optional checks never break rc).
 
 from __future__ import annotations
 
-import ctypes
 import os
 import shutil
 import subprocess
@@ -24,10 +23,9 @@ class CheckResult:
 
 
 def _is_admin() -> bool:
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
-    except Exception:
-        return False
+    # Field-review C5: route through the cross-platform ABC.
+    from .platforms import platform
+    return platform().is_admin()
 
 
 def _version(cmd: list[str], timeout: float = 5.0) -> tuple[bool, str]:

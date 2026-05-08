@@ -168,11 +168,16 @@ def compute_machine_id(
     / `_hostname` explicitly (including ``None`` / empty values) to
     bypass the corresponding system-query primitive. The default
     sentinel ``_UNSET`` triggers a real query.
+
+    Field-review C5: the OS-specific primitives are reached through
+    the Platform ABC so a future POSIX implementation lands without
+    re-touching this resolver.
     """
+    from .platforms import platform as _platform_factory
+    plat = _platform_factory()
+
     # Priority 1: SMBIOS UUID.
-    uuid = (
-        _smbios_uuid_via_powershell() if _smbios_uuid is _UNSET else _smbios_uuid
-    )
+    uuid = plat.machine_id_smbios_uuid() if _smbios_uuid is _UNSET else _smbios_uuid
     if isinstance(uuid, str) and uuid.strip() and uuid.strip().lower() not in _NULL_UUIDS:
         return MachineId(
             machine_id=f"MACHINE-{_hash8(uuid.strip().lower())}",
@@ -182,9 +187,7 @@ def compute_machine_id(
     # Priority 2: Windows Machine SID. Field-review M5 explicitly
     # names this as a fallback alongside MAC; we put it ABOVE MAC
     # because NIC swaps rotate MACs but a Machine SID survives.
-    sid = (
-        _machine_sid_via_powershell() if _machine_sid is _UNSET else _machine_sid
-    )
+    sid = plat.machine_id_machine_sid() if _machine_sid is _UNSET else _machine_sid
     if isinstance(sid, str) and sid.strip() and sid.upper().startswith("S-1-5-21-"):
         return MachineId(
             machine_id=f"MACHINE-{_hash8(sid.upper())}",
@@ -192,7 +195,7 @@ def compute_machine_id(
         )
 
     # Priority 3: physical NIC MACs.
-    macs = _physical_mac_addresses() if _macs is _UNSET else _macs
+    macs = plat.machine_id_macs() if _macs is _UNSET else _macs
     if macs and isinstance(macs, list):
         # Sort so two NICs in different enumeration order produce
         # the same joined string.

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import os
 import re
 import tkinter as tk
@@ -10,6 +9,7 @@ from collections.abc import Callable
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
+from ..platforms import platform as _platform
 from .duration import DurationParseError, format_duration, parse_duration
 from .runner import SubprocessRunner
 from .tooltip import attach as tooltip
@@ -17,10 +17,8 @@ from .widgets import LogPane
 
 
 def _is_admin() -> bool:
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())  # type: ignore[attr-defined]
-    except Exception:
-        return False
+    # Field-review C5: route through the cross-platform ABC.
+    return _platform().is_admin()
 
 
 _HEARTBEAT_RE = re.compile(
