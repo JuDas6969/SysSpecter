@@ -18,6 +18,30 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **M3** (fleet aggregation): new `sysspecter aggregate` subcommand
+  + `sysspecter/aggregator/` package answers fleet-wide questions
+  that single-run analysis can't:
+    - **Per-axis fleet distribution** (mean, p50, p95, std) across
+      every run in the input tree.
+    - **Outliers** — machines whose latest run is ≥ 2σ off the
+      fleet mean, ranked by |z-score|.
+    - **Per-machine longitudinal view** — runs grouped by M5
+      `machine_id`, sorted by start time, with first-vs-last drift
+      per score axis. Survives hostname renames thanks to M5.
+    - **Common baseline-deviation rollup** — C3 deviations seen
+      across multiple machines surface as fleet-wide problems
+      (`machines_affected` / `machines_in_class`).
+  Output: `<output-root>/Aggregations/AGG_<ts>/` containing
+  `manifest.json`, `aggregated_findings.json`, `per_machine.csv`,
+  `fleet_report.html`. CLI:
+  `sysspecter aggregate --input C:\Temp\SysSpecter\Runs`. Builds
+  on M5 (machine_id), M2 (meta), C3 (baselines), A6 (tail
+  windows). 14 contract tests in `tests/test_aggregator.py`
+  covering loader edge cases (broken folders, deep tree walks),
+  fleet-stats math, outlier semantics (latest-run-per-machine,
+  z-score threshold, recovery from old bad data), drift
+  computation, and the full end-to-end CLI flow.
+
 - **C5** (cross-platform abstraction): new `sysspecter/platforms/`
   package introduces a `Platform` ABC for OS-specific calls. Today
   it has one concrete implementation (`WindowsPlatform`) plus a

@@ -185,6 +185,20 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-subreports", action="store_true", dest="no_subreports",
                     help="Only detect phases; skip generating per-phase HTML reports")
 
+    # Field-review M3: fleet aggregation across many runs.
+    ag = sub.add_parser(
+        "aggregate",
+        help="Aggregate a tree of finished runs into a fleet view "
+             "(distributions, outliers, per-machine longitudinal trend)",
+    )
+    ag.add_argument("--input", required=True, dest="input_root",
+                    help="Folder to scan recursively for run folders "
+                         "(typically <output-root>/Runs or an archive).")
+    ag.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT,
+                    help="Where to write the aggregation folder. The "
+                         "result lands under <output-root>/Aggregations/"
+                         "AGG_<timestamp>/ (default: %(default)s).")
+
     return parser
 
 
@@ -583,8 +597,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_sanitize(args)
     if args.command == "doctor":
         return _cmd_doctor(args)
+    if args.command == "aggregate":
+        return _cmd_aggregate(args)
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def _cmd_aggregate(args: argparse.Namespace) -> int:
+    """Field-review M3: scan a tree of runs, produce fleet view."""
+    from sysspecter.aggregator import run_aggregate
+    if not os.path.isdir(args.input_root):
+        print(f"error: input folder not found: {args.input_root}",
+              file=sys.stderr)
+        return 2
+    out_dir = run_aggregate(args.input_root, args.output_root)
+    print(f"Aggregation written to {out_dir}")
+    return 0
 
 
 if __name__ == "__main__":

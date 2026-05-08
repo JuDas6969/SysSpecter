@@ -436,7 +436,12 @@ tool produced. Numbering is the ID used in the field-review document.
   CLI flags: `--meta KEY=VALUE` (repeatable) plus convenience
   shortcuts. Pydantic schema validates; v1/v2 manifests without
   `meta` still load. Runs-tab filter searches both keys + values.
-- [ ] **M3** — fleet aggregation tool downstream of capture.
+- [x] **M3** — `sysspecter aggregate` subcommand consumes a
+  directory of runs and produces fleet views: per-axis mean / p50 /
+  p95 / std, outliers (z >= 2 vs fleet mean), per-machine
+  longitudinal trend grouped by M5 machine_id, common C3 baseline-
+  deviation rollups. Output under
+  `<output-root>/Aggregations/AGG_<ts>/`.
 - [x] **M5** — `manifest.machine_id` is a `MACHINE-xxxxxxxx` token
   hashed from the SMBIOS UUID (priority 1), Windows Machine SID
   (priority 2 — survives NIC swaps), physical NIC MACs (priority 3),
