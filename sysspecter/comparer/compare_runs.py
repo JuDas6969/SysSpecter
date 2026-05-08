@@ -10,6 +10,7 @@ from ..logging_setup import get_logger
 from ..paths import build_comparison_paths
 from ..reporter.json_export import atomic_write_json
 from .compare_report import build_comparison_report
+from .cross_run_view import build_cross_run_view
 from .diagnosis import bottleneck_comparison, generate_hypotheses, generate_recommendations
 from .loader import load_run_full
 from .matrix import build_matrix, write_matrix_csv
@@ -123,6 +124,19 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
     hypotheses = generate_hypotheses(loaded, matrix, hw_diff, sw_diff, cfg_diff)
     recommendations = generate_recommendations(hypotheses)
 
+    # Field-review A5: lift the new schema fields (M5 machine_id,
+    # M2 meta, A6 tail_windows, C3 baseline_deviations, C4
+    # capture_profile) into the comparison output.
+    cross_run_view = build_cross_run_view(loaded)
+    if cross_run_view["same_machine"]:
+        logger.info("cross-run: all %d runs share a machine_id (longitudinal trend)",
+                    len(loaded))
+    if cross_run_view["tail_window_view"]["common_window_label"]:
+        logger.info(
+            "cross-run: tail-window-aligned view available at %s",
+            cross_run_view["tail_window_view"]["common_window_label"],
+        )
+
     comparison_findings = {
         "mode": mode,
         "mode_label": mode_label(mode),
@@ -147,6 +161,7 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
             "config": cfg_diff,
         },
         "bottleneck_comparison": bottlenecks,
+        "cross_run_view": cross_run_view,
         "root_causes": hypotheses,
         "recommendations": recommendations,
     }
@@ -180,6 +195,7 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         bottlenecks=bottlenecks,
         hypotheses=hypotheses,
         recommendations=recommendations,
+        cross_run_view=cross_run_view,
     )
     logger.info("comparison complete: %s", paths.comparison_dir)
     return paths.comparison_dir

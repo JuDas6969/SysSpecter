@@ -138,6 +138,87 @@ _TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8">
   {% endfor %}</tbody></table>
 </div>
 
+{% if cross_run_view %}
+<h2>Cross-run view
+  <span class="small">(M5 machine_id, M2 meta, A6 tail-window, C3 baselines)</span></h2>
+<div class="card">
+  <div class="kvs">
+    <div class="kv">
+      <div class="k">Same machine?</div>
+      <div class="v">
+        {% if cross_run_view.same_machine %}
+          <span class="badge low">YES — longitudinal trend</span>
+        {% else %}
+          <span class="badge medium">no</span>
+        {% endif %}
+      </div>
+    </div>
+    {% if cross_run_view.shared_machine_class %}
+    <div class="kv"><div class="k">Shared machine class</div>
+      <div class="v">{{ cross_run_view.shared_machine_class }}</div></div>
+    {% endif %}
+    {% if cross_run_view.shared_capture_profile %}
+    <div class="kv"><div class="k">Shared capture profile</div>
+      <div class="v">{{ cross_run_view.shared_capture_profile }}</div></div>
+    {% endif %}
+  </div>
+
+  <h3>Machine identity</h3>
+  <table><thead><tr>
+    <th>run</th><th>machine_id</th><th>source</th>
+  </tr></thead><tbody>
+    {% for m in cross_run_view.machine_ids %}
+    <tr>
+      <td><code>{{ m.run_id }}</code></td>
+      <td><code>{{ m.machine_id or '—' }}</code></td>
+      <td class="small">{{ m.machine_id_source or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table>
+
+  {% if cross_run_view.shared_meta %}
+  <h3>Shared metadata <span class="small">(every run agrees)</span></h3>
+  <table><thead><tr><th>key</th><th>value</th></tr></thead><tbody>
+    {% for k, v in cross_run_view.shared_meta.items() %}
+    <tr><td><code>{{ k }}</code></td><td>{{ v }}</td></tr>
+    {% endfor %}
+  </tbody></table>
+  {% endif %}
+
+  {% if cross_run_view.tail_window_view.common_window_label %}
+  <h3>Tail-window-aligned scores
+    <span class="small">(comparable across run lengths — A6)</span></h3>
+  <p class="small">All runs scored over their <b>{{ cross_run_view.tail_window_view.common_window_label }}</b> tail window.</p>
+  <table><thead><tr>
+    <th>run</th><th>overall</th>
+    <th>stability</th><th>efficiency</th><th>workload</th>
+    <th>network</th><th>hygiene</th>
+  </tr></thead><tbody>
+    {% for r in cross_run_view.tail_window_view.rows %}
+    <tr>
+      <td><code>{{ r.run_id }}</code></td>
+      <td><b>{{ r.overall }}</b></td>
+      <td>{{ r.stability }}</td>
+      <td>{{ r.efficiency }}</td>
+      <td>{{ r.workload_suitability }}</td>
+      <td>{{ r.network_impact }}</td>
+      <td>{{ r.resource_hygiene }}</td>
+    </tr>
+    {% endfor %}
+  </tbody></table>
+  {% endif %}
+
+  {% if cross_run_view.baseline_deviations.common %}
+  <h3>Common baseline deviations <span class="small">(every run shows them)</span></h3>
+  <table><thead><tr><th>class</th><th>metric</th></tr></thead><tbody>
+    {% for d in cross_run_view.baseline_deviations.common %}
+    <tr><td>{{ d.machine_class }}</td><td>{{ d.metric }}</td></tr>
+    {% endfor %}
+  </tbody></table>
+  {% endif %}
+</div>
+{% endif %}
+
 <h2>Hardware</h2>
 <div class="card">
 {% if hw_profiles %}
@@ -461,6 +542,7 @@ def build_comparison_report(
     bottlenecks: dict[str, Any] | None = None,
     hypotheses: list[dict[str, Any]] | None = None,
     recommendations: list[dict[str, Any]] | None = None,
+    cross_run_view: dict[str, Any] | None = None,
 ) -> None:
     env = Environment(loader=BaseLoader(), autoescape=select_autoescape())
     tpl = env.from_string(_TEMPLATE)
@@ -509,6 +591,7 @@ def build_comparison_report(
         bottlenecks=bottlenecks,
         hypotheses=hypotheses,
         recommendations=recommendations,
+        cross_run_view=cross_run_view,
     )
     tmp = paths.html + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

@@ -18,6 +18,30 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A5** (cross-run aggregation view): `sysspecter compare` already
+  shipped auto-mode-detection + HW/SW diff + evidence-based
+  recommendations, but it didn't use any of the new schema fields
+  (M5 machine_id, M2 meta, A6 tail_windows, C3 baseline_deviations,
+  C4 capture_profile). New module
+  `sysspecter/comparer/cross_run_view.py` lifts those fields into a
+  single block in the comparison output:
+    - `same_machine` flag (true when every run shares a machine_id)
+    - `machine_ids` (per-run machine_id + source for inspection)
+    - `shared_machine_class` / `shared_capture_profile` /
+      `shared_meta` (entries every run agrees on — set only when
+      all runs match)
+    - `tail_window_view` with the LARGEST common A6 window all
+      runs cover, plus per-run rows showing all 7 score axes in
+      that window (length-comparable scores at last)
+    - `baseline_deviations.common` — C3 deviations every run shares
+      (the "fleet-wide problem" indicator), plus `per_run` for the
+      run-specific ones
+  HTML compare report adds a "Cross-run view" section between the
+  matrix and the Hardware diff. 15 contract tests in
+  `tests/test_cross_run_view.py` pin the same-machine /
+  shared-meta / tail-window-alignment / common-baseline-deviations
+  semantics.
+
 - **C3** (machine-class baselines): new analyzer module
   `sysspecter/analyzer/machine_class_baselines.py` ships per-class
   baseline profiles (developer-workstation / engineering-workstation /

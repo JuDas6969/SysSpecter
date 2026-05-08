@@ -369,6 +369,12 @@ tool produced. Numbering is the ID used in the field-review document.
   (parent_name, child_name) pair with instance counts, peak RSS
   total, and example PIDs. Worker-pool architectures visible in
   5 seconds instead of after parsing raw events.
+- [x] **A5** — `sysspecter/comparer/cross_run_view.py` lifts the
+  new schema fields (M5 machine_id, M2 meta, A6 tail_windows, C3
+  baseline_deviations, C4 capture_profile) into the comparison
+  output. HTML compare report adds a "Cross-run view" section
+  showing same_machine flag, shared meta, length-comparable tail
+  scores, and common baseline deviations.
 - [x] **A6** — `compute_tail_window_scores()` re-scores over
   canonical `last_1h` and `last_8h` tails so two runs of any
   length are comparable apples-to-apples. Tail scores ship in
