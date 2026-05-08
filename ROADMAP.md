@@ -278,3 +278,112 @@ explicit follow-up issue with the delta and a cause analysis — we
 accept slipping by ≤ 1 week on at most 2 dimensions, but not silently.
 
 © 2026 David Juriga — SysSpecter
+
+---
+
+## Appendix — Field-Use Review (post-1.0 production findings)
+
+Items below come from a real-world diagnosis (KTM MotoDB, multi-day
+race-day workloads). They survive the multi-agent review's speculative
+recommendations because they were validated against actual data the
+tool produced. Numbering is the ID used in the field-review document.
+
+### Bug fixes — data correctness
+
+- [x] **B2** — `commit_used_bytes` / `commit_total_bytes` populated via
+  `GlobalMemoryStatusEx` (was always None). `proc_queue_len` deprecated
+  (kept for backwards-compat, will be dropped in schema v3).
+- [x] **B3** — PDH counter rollover on `ctx_switches_per_sec` /
+  `interrupts_per_sec`: negative deltas surface as `None` instead of
+  `~-1.5e8` poisoning the timeline.
+- [ ] **B1** — three-way duration mismatch (scores.json vs CSV vs
+  manifest). Single source of truth required at score time. **Open.**
+- [ ] **B4** — `cpu_freq_current_mhz` reads WMI nominal P-state, never
+  reflects turbo. Replace with `\Processor Information(*)\% Processor
+  Performance` × base-clock, or `CallNtPowerInformation`. **Open.**
+- [x] **B5** — `disk_active_pct_est` documented as estimate (rename
+  deferred — touches 18 files including golden test fixtures).
+
+### Schema additions — unlock new analyses
+
+- [x] **H3** — `ppid` and `parent_name` in `timeline_processes.csv`. No
+  more manifest-lookup-per-pid for parent attribution.
+- [x] **H9** — `num_page_faults` per process (psutil). Leading
+  indicator for memory pressure / swap thrash.
+- [x] **S3** — `sample_late_ms` column in `timeline_system.csv`. Lets
+  consumers distinguish "system was idle" from "we missed the tick"
+  under load.
+- [ ] **H1** — handle types over time (File/Event/Mutex/Section/COM)
+  via `NtQuerySystemInformation(SystemHandleInformation)`. Diagnoses
+  managed-handle leaks without ETW. **Open — weeks of work.**
+- [ ] **H2** — managed-runtime metrics (.NET, JVM, Python). ETW
+  `Microsoft-Windows-DotNETRuntime` for .NET; `\.NET CLR Memory(*)`
+  perfcounters as MVP. **Open.**
+- [ ] **H4** — `process_events.json` always-on instead of opt-in. **Open.**
+- [ ] **H5** — per-core CPU as separate file or 20 columns instead of
+  semicolon blob. **Open.**
+- [ ] **H6** — `cpu_user_pct` / `cpu_system_pct` as per-sample deltas
+  alongside cumulative. **Open.**
+- [ ] **H7** — CPU package power + temperature (Intel RAPL via MSR or
+  Power Gadget). **Open.**
+- [ ] **H8** — short-lived TCP connections via kernel ETW provider
+  instead of polling. **Open.**
+
+### Sampling discipline
+
+- [ ] **S1** — sampler drops > 30 s gaps under load. Mitigations:
+  HIGH_PRIORITY_CLASS, queue-based CSV writer, ETW for events. **Open.**
+- [ ] **S2** — sampler is itself 95–98 % of one core. Native (Rust/C++)
+  hot loop the strategic fix. **Open — months.**
+
+### Analyzer engine
+
+- [ ] **A1** — sliding-window per-PID linear regression for leak
+  detection (current heuristic gets diluted by post-plateau samples).
+- [ ] **A2** — plateau / deadlock detection (RSS growth then RSS+CPU
+  flat for 10 min).
+- [ ] **A3** — periodicity detection on system metrics (autocorrelation
+  finds Defender / EDR / SCM cycles).
+- [ ] **A4** — process-tree visual reconstruction in HTML report.
+- [ ] **A6** — cap-window-aware scoring (current scores normalize over
+  full run length, comparable scores require canonical windows).
+
+### Cross-domain (multi-vendor / multi-stack)
+
+- [ ] **C1** — stack-aware leak thresholds (JVM heaps, .NET server-GC
+  saw-tooth, browser auto-GC differ from Python/Matlab). False
+  positives blocked.
+- [ ] **C2** — externalize process-classification dictionary (EDR
+  catalog: Defender / CrowdStrike / SentinelOne / Sophos / Cortex
+  XDR). YAML-based, community-extensible.
+- [ ] **C3** — machine-class baselines (developer / kiosk / terminal-
+  server / engineering-workstation).
+- [ ] **C4** — capture profiles (`leak-hunt`, `security-audit`,
+  `av-overhead`, `thermal`, `incident-snapshot`).
+- [ ] **C5** — cross-platform abstraction (ETW / eBPF / dtrace).
+
+### Multi-tenant / fleet
+
+- [ ] **M1** — privacy redaction at capture time (the existing
+  `sysspecter sanitize` only operates post-hoc).
+- [ ] **M2** — structured tag schema in manifest (department / ticket /
+  scenario / change_under_test).
+- [ ] **M3** — fleet aggregation tool downstream of capture.
+- [ ] **M5** — stable `machine_id` independent of hostname renames.
+
+### Architecture / strategic
+
+- [ ] **X1** — native sampler (Rust/C++) reading the same APIs in
+  1–2 % CPU instead of 95–98 %. Months.
+- [ ] **X2** — hybrid ETW (events) + polling (samples) eliminates
+  missed-event class entirely.
+- [ ] **X3** — plug-in analyzer architecture (`analyzers/` directory,
+  declared inputs/outputs, union of findings).
+- [ ] **X4** — streaming / online analysis (live findings during long
+  idle runs).
+
+These items have been prioritized. The **B**-block plus **H3 / H9 / S3**
+landed this session; **B1 / B4** remain as data-correctness debt that
+needs correcting before fleet-rollout. **C1 / C2 / M1** are the
+cross-domain blockers — without them every customer with a non-Microsoft
+EDR or a JVM workload sees false positives.

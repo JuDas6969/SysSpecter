@@ -6,6 +6,32 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed (data correctness — from production-use review)
+
+- **B2**: `commit_used_bytes` and `commit_total_bytes` are now populated
+  via `GlobalMemoryStatusEx` (Win32). Previously emitted as None for
+  every sample despite being declared in the schema, so downstream
+  consumers thought commit charge data simply didn't exist.
+- **B3**: PDH counter rollover that produced values around `-1.5e8`
+  in `ctx_switches_per_sec` and `interrupts_per_sec` after multi-day
+  uptime is now caught — negative deltas surface as `None` rather
+  than poisoning the timeline with synthetic giant spikes.
+- **B5**: `disk_active_pct_est` carries an explicit docstring noting
+  it's an estimate from psutil's `busy_time` delta and biased low on
+  NVMe. Rename deferred (would touch the golden test fixture).
+
+### Added (schema additions — from production-use review)
+
+- **H3** — `ppid` and `parent_name` columns in `timeline_processes.csv`.
+  Removes the manifest-join-per-PID step when reconstructing
+  worker-supervisor trees during analysis.
+- **H9** — `num_page_faults` per process. Leading indicator for memory
+  pressure / page-file thrashing.
+- **S3** — `sample_late_ms` column in `timeline_system.csv`. The
+  sampler now records how late each tick fired vs. its scheduled
+  time, so a consumer can distinguish "system was idle" from "the
+  sampler was preempted under load."
+
 ### Added
 - **SECURITY.md** with CVE reporting process + disclosure policy.
 - **CONTRIBUTING.md** with quick-start, coding guidelines, and release

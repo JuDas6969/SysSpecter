@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
 import time
+from ctypes import wintypes
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -11,6 +13,41 @@ import psutil
 from ..logging_setup import get_logger
 
 _log = get_logger(__name__)
+
+
+# ---- Win32 GlobalMemoryStatusEx for commit charge ---------------------
+# psutil's swap_memory() reports a derived "swap" number that subtracts
+# physical RAM from the page-file total — useful, but NOT the same as
+# Windows' commit charge. The Task-Manager "Commit (KB)" is exactly
+# ullTotalPageFile - ullAvailPageFile, so we read it directly.
+
+class _MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", wintypes.DWORD),
+        ("dwMemoryLoad", wintypes.DWORD),
+        ("ullTotalPhys", ctypes.c_ulonglong),
+        ("ullAvailPhys", ctypes.c_ulonglong),
+        ("ullTotalPageFile", ctypes.c_ulonglong),
+        ("ullAvailPageFile", ctypes.c_ulonglong),
+        ("ullTotalVirtual", ctypes.c_ulonglong),
+        ("ullAvailVirtual", ctypes.c_ulonglong),
+        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+    ]
+
+
+def _commit_charge() -> tuple[int | None, int | None]:
+    """Return (commit_used_bytes, commit_total_bytes) from Win32, or
+    (None, None) on non-Windows / API failure."""
+    try:
+        m = _MEMORYSTATUSEX()
+        m.dwLength = ctypes.sizeof(m)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+            used = int(m.ullTotalPageFile - m.ullAvailPageFile)
+            total = int(m.ullTotalPageFile)
+            return used, total
+    except Exception:
+        _log.debug("GlobalMemoryStatusEx failed", exc_info=True)
+    return None, None
 
 _last_disk: dict[str, Any] | None = None
 _last_net: dict[str, Any] | None = None
@@ -23,9 +60,15 @@ class SystemSample:
     rel_seconds: float
     cpu_total_pct: float
     cpu_per_core_pct: list[float]
+    # WMI's CurrentClockSpeed is the chipset's nominal P-state — it
+    # never reflects turbo boost on modern Intel/AMD parts. Treat as a
+    # rough indicator only; see ROADMAP.md "B4" for the proper fix
+    # (PerformanceCounter `% Processor Performance` × base clock).
     cpu_freq_current_mhz: float | None
     ctx_switches_per_sec: float | None
     interrupts_per_sec: float | None
+    # Deprecated — never populated. Kept as None for CSV-schema
+    # backwards compatibility; will be removed in schema v3.
     proc_queue_len: float | None
     mem_total_bytes: int
     mem_available_bytes: int
@@ -34,12 +77,21 @@ class SystemSample:
     swap_total_bytes: int
     swap_used_bytes: int
     swap_percent: float
+    # Windows commit charge from GlobalMemoryStatusEx, NOT the same as
+    # swap_used (which subtracts RAM). This is the value Task Manager
+    # shows as "Committed".
     commit_used_bytes: int | None
     commit_total_bytes: int | None
     disk_read_bytes_per_sec: float
     disk_write_bytes_per_sec: float
     disk_read_count_per_sec: float
     disk_write_count_per_sec: float
+    # Estimated from psutil disk_io_counters().busy_time delta —
+    # accurate on HDDs, biased LOW on NVMe (where the controller can
+    # service many concurrent ops without blocking). Treat as a
+    # qualitative indicator, not a measurement. The full fix is to
+    # consume the `\PhysicalDisk(*)\% Disk Time` perfcounter; tracked
+    # in ROADMAP.md "B5".
     disk_active_pct_est: float
     net_sent_bytes_per_sec: float
     net_recv_bytes_per_sec: float
@@ -49,12 +101,25 @@ class SystemSample:
     net_errout_per_sec: float
     net_dropin_per_sec: float
     net_dropout_per_sec: float
+    # How many milliseconds late this sample fired vs. its scheduled
+    # tick. > 500 ms means the sampler was preempted under load — a
+    # consumer can use this to distinguish "system idle" from "we
+    # missed it" when reading the timeline.
+    sample_late_ms: float
 
 
 _last_cpu_stats: tuple[float, int, int] | None = None
 
 
 def _cpu_stats_rates() -> tuple[float | None, float | None]:
+    """Return (ctx_switches_per_sec, interrupts_per_sec).
+
+    psutil exposes the underlying PDH counters which are 32-bit on some
+    Windows builds and roll over after several days of uptime — when
+    that happens the raw delta goes massively negative (~ -1.5e8 in
+    field reports). We detect any negative delta and surface it as
+    ``None`` instead of poisoning the timeline with a fake huge spike.
+    """
     global _last_cpu_stats
     try:
         st = psutil.cpu_stats()
@@ -67,9 +132,14 @@ def _cpu_stats_rates() -> tuple[float | None, float | None]:
         return None, None
     prev_t, prev_ctx, prev_int = _last_cpu_stats
     dt = max(now - prev_t, 1e-3)
-    ctx_rate = (st.ctx_switches - prev_ctx) / dt
-    int_rate = (st.interrupts - prev_int) / dt
+    ctx_delta = st.ctx_switches - prev_ctx
+    int_delta = st.interrupts - prev_int
     _last_cpu_stats = (now, st.ctx_switches, st.interrupts)
+    # Guard against PDH counter rollover (delta would go negative).
+    ctx_rate = (ctx_delta / dt) if ctx_delta >= 0 else None
+    int_rate = (int_delta / dt) if int_delta >= 0 else None
+    if ctx_rate is None or int_rate is None:
+        _log.debug("cpu_stats counter rollover detected (skipped)")
     return ctx_rate, int_rate
 
 
@@ -118,13 +188,25 @@ def _net_totals() -> dict[str, float]:
     }
 
 
-def collect_system_sample(started_mono: float) -> SystemSample:
-    """Collect one per-second system sample. Uses monotonic clock for rate math."""
+def collect_system_sample(
+    started_mono: float, scheduled_at: float | None = None
+) -> SystemSample:
+    """Collect one per-second system sample. Uses monotonic clock for rate math.
+
+    `scheduled_at` is the monotonic time the runner originally intended
+    this tick to fire. Late samples (sampler preempted under load) are
+    surfaced as ``sample_late_ms`` so consumers can distinguish "system
+    was idle" from "we missed a tick."
+    """
     global _last_disk, _last_net, _last_ts
 
     now_wall = time.time()
     now_mono = time.monotonic()
     rel = now_mono - started_mono
+    if scheduled_at is None:
+        late_ms = 0.0
+    else:
+        late_ms = max(0.0, (now_mono - scheduled_at) * 1000.0)
 
     cpu_total = psutil.cpu_percent(interval=None)
     cpu_per_core = psutil.cpu_percent(interval=None, percpu=True)
@@ -133,6 +215,7 @@ def collect_system_sample(started_mono: float) -> SystemSample:
 
     vm = psutil.virtual_memory()
     sm = psutil.swap_memory()
+    commit_used, commit_total = _commit_charge()
 
     read_b, write_b, read_c, write_c, busy_time, total_rw_time = _disk_totals()
     net = _net_totals()
@@ -191,8 +274,8 @@ def collect_system_sample(started_mono: float) -> SystemSample:
         swap_total_bytes=int(sm.total),
         swap_used_bytes=int(sm.used),
         swap_percent=float(sm.percent),
-        commit_used_bytes=None,
-        commit_total_bytes=None,
+        commit_used_bytes=commit_used,
+        commit_total_bytes=commit_total,
         disk_read_bytes_per_sec=round(d_read_bps, 1),
         disk_write_bytes_per_sec=round(d_write_bps, 1),
         disk_read_count_per_sec=round(d_read_cps, 2),
@@ -206,6 +289,7 @@ def collect_system_sample(started_mono: float) -> SystemSample:
         net_errout_per_sec=round(eout, 2),
         net_dropin_per_sec=round(din, 2),
         net_dropout_per_sec=round(dout, 2),
+        sample_late_ms=round(late_ms, 1),
     )
 
 

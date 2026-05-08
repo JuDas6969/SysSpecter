@@ -49,7 +49,15 @@ class ProcessSample:
     cpu_time_system: float
     username: str | None
     ppid: int | None
+    # parent_name avoids a join during analysis: when 100+ workers spawn
+    # under a single supervisor, attribution is one column-read instead
+    # of a manifest-lookup-per-pid.
+    parent_name: str | None
     create_time: float | None
+    # Soft + hard page faults (psutil exposes the total). Useful as a
+    # leading indicator of memory pressure: hard faults rise when the
+    # working set is being thrashed against the page file.
+    num_page_faults: int | None
     is_target: bool
 
 
@@ -167,6 +175,10 @@ def collect_process_sample(
     samples: list[ProcessSample] = []
     dropped: list[int] = []
 
+    # Resolve parent names from the candidate set; otherwise fall back
+    # to a one-shot lookup. Cached for the duration of this sample.
+    parent_name_cache: dict[int, str] = {}
+
     for pid, proc in list(_proc_cache.items()):
         try:
             with proc.oneshot():
@@ -190,6 +202,14 @@ def collect_process_sample(
                     username = proc.username()
                 except Exception:
                     username = None
+                # Page faults — psutil exposes a single counter on Windows
+                # (combined soft + hard). None on platforms without it.
+                page_faults: int | None
+                try:
+                    pf = proc.memory_info()
+                    page_faults = int(getattr(pf, "num_page_faults", 0)) or None
+                except Exception:
+                    page_faults = None
                 create_time = proc.create_time()
                 exe_lc = ""
                 if target_path_lc:
@@ -197,6 +217,25 @@ def collect_process_sample(
                         exe_lc = (proc.exe() or "").lower()
                     except Exception:
                         exe_lc = ""
+
+                # Resolve parent_name: prefer cache from this sample,
+                # then process_iter cache, finally a tolerant lookup.
+                parent_name: str | None = None
+                if ppid is not None:
+                    if ppid in parent_name_cache:
+                        parent_name = parent_name_cache[ppid]
+                    elif ppid in _proc_cache:
+                        try:
+                            parent_name = _proc_cache[ppid].name()
+                            parent_name_cache[ppid] = parent_name
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            parent_name = None
+                    else:
+                        try:
+                            parent_name = psutil.Process(ppid).name()
+                            parent_name_cache[ppid] = parent_name
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            parent_name = None
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             dropped.append(pid)
             continue
@@ -235,7 +274,9 @@ def collect_process_sample(
             cpu_time_system=float(ct.system),
             username=username,
             ppid=ppid,
+            parent_name=parent_name,
             create_time=create_time,
+            num_page_faults=page_faults,
             is_target=is_target,
         ))
 
@@ -264,5 +305,7 @@ def sample_to_csv_row(s: ProcessSample, rel_seconds: float, timestamp: float) ->
         "cpu_time_system": round(s.cpu_time_system, 3),
         "username": s.username or "",
         "ppid": s.ppid or 0,
+        "parent_name": s.parent_name or "",
+        "num_page_faults": s.num_page_faults if s.num_page_faults is not None else "",
         "is_target": 1 if s.is_target else 0,
     }
