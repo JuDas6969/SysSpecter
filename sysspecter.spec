@@ -22,8 +22,11 @@ hiddenimports += collect_submodules("sysspecter")
 
 
 # Bundle logos / icons so the GUI can show them inside the frozen EXE.
+# process_catalog.json drives EDR / AV / VPN / browser classification —
+# without it the analyzer would silently fall back to "no match" for every
+# process. Field-review C2.
 _datas = []
-for name in ("logo.png", "logo_long.png", "icon.png"):
+for name in ("logo.png", "logo_long.png", "icon.png", "process_catalog.json"):
     p = os.path.join("assets", name)
     if os.path.exists(p):
         _datas.append((p, "assets"))

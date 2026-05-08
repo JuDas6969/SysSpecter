@@ -104,17 +104,23 @@ def rank_offenders(
     tgrow_sorted = sorted(items, key=lambda e: e["thread_growth"], reverse=True)
     io_sorted = sorted(items, key=lambda e: e["io_read_bps_avg"] + e["io_write_bps_avg"], reverse=True)
 
-    security_names = {"msmpeng.exe", "mssense.exe", "mpcmdrun.exe", "smartscreen.exe",
-                      "nissrv.exe", "windowsdefender.exe"}
-    sec_items = [e for e in items if (e["name"] or "").lower() in security_names]
+    # Field-review C2: classify by catalog instead of a hardcoded
+    # Microsoft-only set. Picks up CrowdStrike, SentinelOne, Sophos,
+    # Cortex XDR, Carbon Black, Trend Micro, and any user override
+    # under %APPDATA%\\SysSpecter\\process_catalog.json.
+    from ..process_catalog import catalog as _catalog
+    _cat = _catalog()
+    sec_items = [e for e in items if _cat.is_security_tool(e["name"])]
     sec_sorted = sorted(sec_items, key=lambda e: e["cpu_pct_avg"] + e["io_read_bps_avg"] / 1e6, reverse=True)
 
-    background_names = {"onedrive.exe", "teams.exe", "ms-teams.exe", "skype.exe",
-                        "chrome.exe", "msedge.exe", "firefox.exe",
-                        "searchindexer.exe", "searchhost.exe", "startmenuexperiencehost.exe",
-                        "runtimebroker.exe", "yourphone.exe", "phoneexperiencehost.exe",
-                        "dropbox.exe", "slack.exe", "adobe.exe", "creativecloud.exe"}
-    bg_items = [e for e in items if (e["name"] or "").lower() in background_names]
+    # Background-noise = catalog categories typically running idle in
+    # the user's session. Any vendor in these buckets — Workspace ONE
+    # Hub, Slack, Discord, OneDrive, Dropbox, browsers — counts.
+    _BG_CATEGORIES = {"chat", "cloud_sync", "browser", "system", "media"}
+    bg_items = [
+        e for e in items
+        if _cat.category(e["name"]) in _BG_CATEGORIES
+    ]
     bg_sorted = sorted(bg_items, key=lambda e: e["cpu_pct_avg"] + e["rss_mb_max"] / 100, reverse=True)
 
     return {

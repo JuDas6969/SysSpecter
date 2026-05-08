@@ -18,6 +18,24 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **C2** (cross-vendor EDR support): replaced the hardcoded
+  `{"msmpeng.exe", "mssense.exe", "mpcmdrun.exe", "smartscreen.exe",
+  "nissrv.exe", "windowsdefender.exe"}` Microsoft-only set in the
+  analyzer with a JSON-driven process catalog
+  (`assets/process_catalog.json` + 8-test contract pinned in
+  `tests/test_process_catalog.py`). Ships covering all 7 major EDR
+  vendors — Microsoft Defender for Endpoint, CrowdStrike Falcon,
+  SentinelOne, Sophos Intercept X, Palo Alto Cortex XDR, VMware
+  Carbon Black, Trend Micro — plus AV (ESET, Kaspersky, Avira,
+  Malwarebytes, Bitdefender), VPN (Zscaler, Netskope, GlobalProtect,
+  FortiClient, Cisco AnyConnect, OpenVPN, WireGuard), MDM (Intune,
+  Workspace ONE), DLP (Trend Micro, Digital Guardian), and the
+  full set of browsers / IDEs / runtimes / containers / chat tools.
+  Customers can extend without forking via
+  `%APPDATA%\\SysSpecter\\process_catalog.json` (user override beats
+  shipped entry). `KNOWN_APPS` dict in `analyzer/grouping.py` is
+  removed; the catalog supersedes it.
+
 - **D3 / H4**: `manifest.phase3_captured` block alongside the existing
   `phase3` (request) block. Records what actually produced data:
   `process_events`, `service_events`, `event_logs`, `etw_disk`,

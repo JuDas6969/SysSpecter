@@ -6,88 +6,18 @@ workers). Grouping by executable name collapses these into one "app" row with
 totals across instances, so the report surfaces "Chrome is using 2.4 GB"
 instead of 40 separate chrome.exe entries.
 
-Grouping strategy: by lowercased exe name, with a display-name lookup for
-common apps. Per-tick totals are computed by summing concurrent instances at
-each sample, then aggregating across ticks — this yields correct peak
-concurrent CPU/RSS, not just the max of any single PID."""
+Grouping strategy: by lowercased exe name, with display names looked up in
+the C2 process catalog (`assets/process_catalog.json` plus user override).
+Per-tick totals are computed by summing concurrent instances at each sample,
+then aggregating across ticks — this yields correct peak concurrent CPU/RSS,
+not just the max of any single PID."""
 
 from __future__ import annotations
 
 from collections import defaultdict
 from typing import Any
 
-# exe_name (lowercased) -> pretty display name
-KNOWN_APPS: dict[str, str] = {
-    "chrome.exe": "Google Chrome",
-    "msedge.exe": "Microsoft Edge",
-    "msedgewebview2.exe": "Edge WebView2",
-    "firefox.exe": "Mozilla Firefox",
-    "brave.exe": "Brave",
-    "opera.exe": "Opera",
-    "code.exe": "VS Code",
-    "devenv.exe": "Visual Studio",
-    "pycharm64.exe": "PyCharm",
-    "idea64.exe": "IntelliJ IDEA",
-    "webstorm64.exe": "WebStorm",
-    "rider64.exe": "Rider",
-    "python.exe": "Python",
-    "pythonw.exe": "Python (no console)",
-    "node.exe": "Node.js",
-    "java.exe": "Java",
-    "javaw.exe": "Java (no console)",
-    "docker.exe": "Docker",
-    "dockerd.exe": "Docker Engine",
-    "com.docker.backend.exe": "Docker Backend",
-    "wsl.exe": "WSL",
-    "wslhost.exe": "WSL Host",
-    "teams.exe": "Microsoft Teams",
-    "ms-teams.exe": "Microsoft Teams",
-    "slack.exe": "Slack",
-    "discord.exe": "Discord",
-    "zoom.exe": "Zoom",
-    "skype.exe": "Skype",
-    "whatsapp.exe": "WhatsApp",
-    "telegram.exe": "Telegram",
-    "onedrive.exe": "OneDrive",
-    "dropbox.exe": "Dropbox",
-    "googledrive.exe": "Google Drive",
-    "spotify.exe": "Spotify",
-    "outlook.exe": "Outlook",
-    "winword.exe": "Word",
-    "excel.exe": "Excel",
-    "powerpnt.exe": "PowerPoint",
-    "explorer.exe": "Windows Explorer",
-    "svchost.exe": "Service Host",
-    "runtimebroker.exe": "Runtime Broker",
-    "searchhost.exe": "Windows Search",
-    "searchindexer.exe": "Windows Search Indexer",
-    "smartscreen.exe": "SmartScreen",
-    "msmpeng.exe": "Defender Antimalware",
-    "mssense.exe": "Defender ATP Sense",
-    "nissrv.exe": "Defender Network Inspection",
-    "mpcmdrun.exe": "Defender Command Line",
-    "securityhealthservice.exe": "Security Health Service",
-    "wuauserv.exe": "Windows Update",
-    "trustedinstaller.exe": "Windows Module Installer",
-    "dwm.exe": "Desktop Window Manager",
-    "csrss.exe": "Client-Server Runtime",
-    "winlogon.exe": "Windows Logon",
-    "services.exe": "Service Control Manager",
-    "lsass.exe": "Local Security Authority",
-    "taskmgr.exe": "Task Manager",
-    "perfmon.exe": "Performance Monitor",
-    "powershell.exe": "PowerShell",
-    "pwsh.exe": "PowerShell 7",
-    "cmd.exe": "Command Prompt",
-    "conhost.exe": "Console Host",
-    "claude.exe": "Claude",
-    "cursor.exe": "Cursor",
-    "notepad.exe": "Notepad",
-    "notepad++.exe": "Notepad++",
-    "obs64.exe": "OBS Studio",
-    "steam.exe": "Steam",
-    "epicgameslauncher.exe": "Epic Games",
-}
+from ..process_catalog import catalog as _catalog
 
 
 def _app_key(name: str | None) -> str:
@@ -97,11 +27,8 @@ def _app_key(name: str | None) -> str:
 
 
 def _display_name(key: str) -> str:
-    if key in KNOWN_APPS:
-        return KNOWN_APPS[key]
-    # fallback: strip .exe, title-case
-    base = key[:-4] if key.endswith(".exe") else key
-    return base if base.isupper() else base.title()
+    """Pretty display name from the catalog, with fallback to title-case."""
+    return _catalog().display_name(key)
 
 
 def group_processes_by_app(

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..process_catalog import catalog as _catalog
+
 
 def classify_bottlenecks(
     system_rows: list[dict[str, Any]],
@@ -66,12 +68,19 @@ def classify_bottlenecks(
             if tag in scores:
                 scores[tag] += 5
         if "top_cpu" in (s.get("offenders") or {}):
+            cat = _catalog()
             for o in s["offenders"]["top_cpu"][:3]:
-                name = (o.get("name") or "").lower()
-                if name in {"msmpeng.exe", "mssense.exe", "mpcmdrun.exe"}:
+                name = (o.get("name") or "")
+                # C2: any catalog-known security tool counts here, not
+                # only Microsoft Defender — CrowdStrike / SentinelOne /
+                # Sophos top-CPU during a slowdown are equally diagnostic.
+                if cat.is_security_tool(name):
+                    entry = cat.lookup(name)
+                    label = entry.display_name if entry else name
                     scores["security"] += 10
                     reasons["security"].append(
-                        f"{name} among top CPU offenders during slowdown s={s.get('start_rel'):.0f}"
+                        f"{label} among top CPU offenders during slowdown "
+                        f"s={s.get('start_rel'):.0f}"
                     )
 
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)

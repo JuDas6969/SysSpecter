@@ -361,9 +361,14 @@ tool produced. Numbering is the ID used in the field-review document.
 - [ ] **C1** — stack-aware leak thresholds (JVM heaps, .NET server-GC
   saw-tooth, browser auto-GC differ from Python/Matlab). False
   positives blocked.
-- [ ] **C2** — externalize process-classification dictionary (EDR
-  catalog: Defender / CrowdStrike / SentinelOne / Sophos / Cortex
-  XDR). YAML-based, community-extensible.
+- [x] **C2** — JSON-driven process catalog
+  (`assets/process_catalog.json`) covers all 7 major EDR vendors plus
+  AV / VPN / MDM / DLP / browser / IDE / runtime / container / chat /
+  cloud-sync. User override at
+  `%APPDATA%\\SysSpecter\\process_catalog.json` beats shipped entry.
+  Replaced hardcoded Microsoft-only sets in `analyzer/offenders.py`,
+  `analyzer/bottlenecks.py`, `analyzer/grouping.py`. Pinned by 8
+  contract tests.
 - [ ] **C3** — machine-class baselines (developer / kiosk / terminal-
   server / engineering-workstation).
 - [ ] **C4** — capture profiles (`leak-hunt`, `security-audit`,
