@@ -377,8 +377,12 @@ tool produced. Numbering is the ID used in the field-review document.
 
 ### Multi-tenant / fleet
 
-- [ ] **M1** — privacy redaction at capture time (the existing
-  `sysspecter sanitize` only operates post-hoc).
+- [x] **M1** — `monitor --redact` runs the sanitize pass automatically
+  after the run finishes. Sanitizer rewritten to use stable hashes
+  (`HOST-7f3a`, `USER-bb9c`, `BIOS-3e2d`) instead of literal
+  `[REDACTED]`, so cross-process correlation survives redaction. New
+  pre-pass strips credential-shaped substrings (passwords / tokens /
+  Bearer / JWT / AWS keys / GitHub tokens) from every text field.
 - [ ] **M2** — structured tag schema in manifest (department / ticket /
   scenario / change_under_test).
 - [ ] **M3** — fleet aggregation tool downstream of capture.

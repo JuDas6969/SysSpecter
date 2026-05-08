@@ -175,8 +175,14 @@ def collect_process_sample(
     samples: list[ProcessSample] = []
     dropped: list[int] = []
 
-    # Resolve parent names from the candidate set; otherwise fall back
-    # to a one-shot lookup. Cached for the duration of this sample.
+    # Resolve parent names from the candidate set ONLY. Falling back to
+    # `psutil.Process(ppid).name()` for unknown ppids triggers an
+    # OpenProcess per call which on slower / heavily-loaded Windows
+    # hosts can blow the per-tick budget and starve the sampler. The
+    # parent name for non-candidate parents is "?" — accuracy gap
+    # accepted, attribution still works for the workers we already
+    # care about (their parent is normally the supervisor we're
+    # tracking).
     parent_name_cache: dict[int, str] = {}
 
     for pid, proc in list(_proc_cache.items()):
@@ -202,14 +208,10 @@ def collect_process_sample(
                     username = proc.username()
                 except Exception:
                     username = None
-                # Page faults — psutil exposes a single counter on Windows
-                # (combined soft + hard). None on platforms without it.
+                # Page faults — psutil exposes the count on the same
+                # memory_info() tuple on Windows (no extra syscall).
                 page_faults: int | None
-                try:
-                    pf = proc.memory_info()
-                    page_faults = int(getattr(pf, "num_page_faults", 0)) or None
-                except Exception:
-                    page_faults = None
+                page_faults = int(getattr(mi, "num_page_faults", 0)) or None
                 create_time = proc.create_time()
                 exe_lc = ""
                 if target_path_lc:
@@ -218,8 +220,9 @@ def collect_process_sample(
                     except Exception:
                         exe_lc = ""
 
-                # Resolve parent_name: prefer cache from this sample,
-                # then process_iter cache, finally a tolerant lookup.
+                # Resolve parent_name from candidate-set cache only.
+                # Skipping the OpenProcess fallback keeps the per-tick
+                # budget well below the sampling interval on slow hosts.
                 parent_name: str | None = None
                 if ppid is not None:
                     if ppid in parent_name_cache:
@@ -227,12 +230,6 @@ def collect_process_sample(
                     elif ppid in _proc_cache:
                         try:
                             parent_name = _proc_cache[ppid].name()
-                            parent_name_cache[ppid] = parent_name
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            parent_name = None
-                    else:
-                        try:
-                            parent_name = psutil.Process(ppid).name()
                             parent_name_cache[ppid] = parent_name
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
                             parent_name = None

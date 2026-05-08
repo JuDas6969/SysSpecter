@@ -80,9 +80,10 @@ def test_sanitize_redacts_hostname_in_manifest(tmp_path: Path) -> None:
     # hostname must be gone everywhere -- including the sanitized_source field
     assert "GPLT3923" not in json.dumps(manifest)
     assert manifest.get("sanitized") is True
-    # sanitized_source still carries the timestamp for provenance, but the
-    # hostname portion is redacted
-    assert "REDACTED" in (manifest.get("sanitized_source") or "")
+    # sanitized_source still carries the timestamp for provenance and now
+    # carries a stable hash token (HOST-xxxx) instead of the literal hostname.
+    src = manifest.get("sanitized_source") or ""
+    assert "HOST-" in src, f"expected HOST-<hash> token in {src!r}"
 
 
 def test_sanitize_redacts_bios_and_disk_serials(tmp_path: Path) -> None:
@@ -140,3 +141,120 @@ def test_sanitize_writes_to_sibling_folder_by_default(tmp_path: Path) -> None:
     out = Path(sanitize_run(str(run)))
     assert out.name.endswith("_sanitized")
     assert out.parent == run.parent
+
+
+# ----- Field-review M1: stable-hash redaction + cmdline secret stripping ---
+
+
+def test_hostname_replaced_with_stable_hash_token(tmp_path: Path) -> None:
+    """Hostname must be replaced by a deterministic ``HOST-xxxx`` token,
+    NOT the literal `[REDACTED]`. Same hostname → same hash, so a
+    consumer can still tell that two redacted runs share a host."""
+    run_a = _make_run(tmp_path / "a", hostname="BOX1")
+    run_b = _make_run(tmp_path / "b", hostname="BOX1")
+    run_c = _make_run(tmp_path / "c", hostname="BOX2")
+
+    a = json.loads(Path(sanitize_run(str(run_a)), "manifest.json")
+                   .read_text(encoding="utf-8"))
+    b = json.loads(Path(sanitize_run(str(run_b)), "manifest.json")
+                   .read_text(encoding="utf-8"))
+    c = json.loads(Path(sanitize_run(str(run_c)), "manifest.json")
+                   .read_text(encoding="utf-8"))
+
+    # Same hostname → same token (correlation preserved across runs).
+    assert a["sanitized_source"] == b["sanitized_source"], \
+        "same hostname must hash to same token"
+    # Different hostname → different token.
+    assert a["sanitized_source"] != c["sanitized_source"], \
+        "different hostnames must NOT collapse to same token"
+
+    # Tokens look like HOST-xxxx (4 hex chars).
+    import re as _re
+    src = a["sanitized_source"]
+    assert _re.search(r"HOST-[0-9a-f]{4}", src), f"token shape wrong in {src!r}"
+
+
+def test_fqdn_collapses_to_same_token_as_hostname(tmp_path: Path) -> None:
+    """`BOX1` and `BOX1.corp.local` must map to the same hash so the
+    redacted report doesn't show them as two different machines."""
+    run = _make_run(tmp_path, hostname="BOX1", fqdn="BOX1.corp.local")
+    out = sanitize_run(str(run))
+    blob = Path(out, "static_snapshot.json").read_text(encoding="utf-8")
+    # No literal hostname or FQDN must survive.
+    assert "BOX1" not in blob
+    assert "corp.local" not in blob
+
+
+def test_bios_disk_baseboard_serials_each_get_distinct_label(tmp_path: Path) -> None:
+    """BIOS / DISK / BB hashes must use different label prefixes so a
+    consumer can tell which serial is which without seeing the value."""
+    run = _make_run(tmp_path, bios_serial="BIOSSEC42", disk_serial="DSER99")
+    out = sanitize_run(str(run))
+    blob = Path(out, "static_snapshot.json").read_text(encoding="utf-8")
+    assert "BIOSSEC42" not in blob
+    assert "DSER99" not in blob
+    # New labels must be present in the redacted output.
+    assert "BIOS-" in blob, "expected BIOS-<hash> label"
+    assert "DISK-" in blob, "expected DISK-<hash> label"
+
+
+def test_cmdline_secret_stripping() -> None:
+    """The pre-pass scrubber must strip credential-shaped substrings
+    BEFORE the identifier replacement runs. Cmdline capture isn't
+    persisted yet, but the scrubber is exercised through any string
+    field — including manifest.tags or findings.summary.verdict."""
+    from sysspecter.sanitizer import _scrub_secrets
+
+    cases = [
+        ("--password=hunter2",                 "<SECRET>"),
+        ("--api-key abc123xyz",                "<SECRET>"),
+        # Bearer pattern catches it before JWT pattern even tries — both
+        # outcomes are acceptable, both strip the actual token.
+        ("Authorization: Bearer eyJabcdef.deadBEEF12.signedThing34",
+                                               "<SECRET>"),
+        # Pure JWT (no Bearer prefix) takes the JWT path.
+        ("token=eyJabcdef12.deadBEEF34.signedThing56",  "<JWT>"),
+        ("ghp_abcdefghijklmnopqrstuvwxyz0123456789", "<GITHUB_TOKEN>"),
+        ("github_pat_AAAA1111BBBB2222CCCC3333DDDD4444",
+                                               "<GITHUB_TOKEN>"),
+        ("AKIAIOSFODNN7EXAMPLE",                "<AWS_KEY>"),
+    ]
+    for raw, expected_substring in cases:
+        scrubbed = _scrub_secrets(raw)
+        assert expected_substring in scrubbed, (
+            f"scrubber missed {raw!r}: got {scrubbed!r}, "
+            f"expected to contain {expected_substring!r}"
+        )
+        # And the literal secret value must NOT survive.
+        if "hunter2" in raw:
+            assert "hunter2" not in scrubbed
+        if "abc123xyz" in raw:
+            assert "abc123xyz" not in scrubbed
+
+
+def test_cmdline_secret_runs_through_redact_text(tmp_path: Path) -> None:
+    """End-to-end: a cmdline-shaped string with both an identifier AND
+    a secret goes through both the secret pre-pass and the identifier
+    substitution."""
+    run = _make_run(tmp_path, hostname="HOSTA")
+    # Inject a cmdline-shaped value into a JSON field that the redactor
+    # walks (findings.summary.verdict is walked for hostname stripping).
+    run_findings = run / "findings.json"
+    payload = json.loads(run_findings.read_text(encoding="utf-8"))
+    payload["summary"]["verdict"] = (
+        "host HOSTA ran service.exe --password=hunter2 --api-key=secretX"
+    )
+    run_findings.write_text(json.dumps(payload), encoding="utf-8")
+
+    out = sanitize_run(str(run))
+    redacted = json.loads(
+        Path(out, "findings.json").read_text(encoding="utf-8")
+    )
+    verdict = redacted["summary"]["verdict"]
+    # Hostname → hash token.
+    assert "HOSTA" not in verdict
+    assert "HOST-" in verdict
+    # Secrets → <SECRET>.
+    assert "hunter2" not in verdict
+    assert "secretX" not in verdict
+    assert "<SECRET>" in verdict

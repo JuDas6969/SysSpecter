@@ -10,11 +10,21 @@ report to a vendor.
 event JSON, rewrites CSV columns that contain hostnames or usernames, and
 re-renders `findings.json`, `scores.json`, `final_report.html`,
 `final_report.md` from the redacted data.
+
+Field-review M1: identifiers are replaced by *stable hashes* of the form
+`HOST-7f3a`, `USER-bb9c`, `BIOS-3e2d` instead of a literal `[REDACTED]`
+token. Same input → same output across every column and file, so
+cross-process attribution still works after redaction (you can still see
+that PIDs 1234 and 5678 belong to the same user, you just don't know
+which user). Hashes are blake2b(lowercased value, 2 bytes) → 4 hex chars,
+which is plenty of unicity at the per-run scale and doesn't survive a
+rainbow-table attack on personal data.
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import re
@@ -28,7 +38,55 @@ _log = get_logger(__name__)
 _REDACTED = "[REDACTED]"
 
 
+def _stable_hash(value: str, label: str) -> str:
+    """Return a deterministic 4-hex-char token, e.g. ``USER-7f3a``.
+
+    Same input → same output across processes, columns, and files,
+    so a redacted run still carries the cross-process correlation
+    structure the analyzer relies on. Non-reversible at any
+    practical scale.
+    """
+    digest = hashlib.blake2b(value.lower().encode("utf-8"), digest_size=2).hexdigest()
+    return f"{label}-{digest}"
+
+
+# Pre-pass patterns applied to every string before the identifier
+# substitution. Catches credentials baked into command lines / config
+# fragments (cmdline capture is currently a no-op, but the safe_collect
+# scaffolding in process_sampler will surface cmdlines in a future
+# release — better to redact them by default than to retrofit later).
+_SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # `--password=...`, `--token=...`, `--api-key=...`, etc.
+    (re.compile(
+        r"(?i)(-{1,2}(?:password|passwd|pwd|secret|token|api[-_]?key|"
+        r"access[-_]?key|client[-_]?secret|auth[-_]?token)"
+        r"\s*[=: ]\s*)\S+"
+    ), r"\1<SECRET>"),
+    # `Authorization: Bearer ...` style
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"), "Bearer <SECRET>"),
+    # raw JWTs (3 base64-ish parts joined by dots)
+    (re.compile(
+        r"\beyJ[A-Za-z0-9_\-]{4,}"
+        r"\.[A-Za-z0-9_\-]{4,}"
+        r"\.[A-Za-z0-9_\-]{4,}"
+    ), "<JWT>"),
+    # AWS access key IDs
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "<AWS_KEY>"),
+    # GitHub tokens (ghp_, github_pat_, gho_, ghs_, ghr_, ghu_)
+    (re.compile(r"\bgh[opsru]_[A-Za-z0-9_]{36,}\b"), "<GITHUB_TOKEN>"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"), "<GITHUB_TOKEN>"),
+]
+
+
+def _scrub_secrets(text: str) -> str:
+    """Strip credential-looking substrings before the identifier pass."""
+    for pat, repl in _SECRET_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
+
+
 def _redact_text(text: str, replacements: dict[str, str]) -> str:
+    text = _scrub_secrets(text)
     for needle, rep in replacements.items():
         if not needle:
             continue
@@ -44,6 +102,10 @@ def _walk_redact(obj: Any, replacements: dict[str, str], drop_keys: set[str]) ->
         out = {}
         for k, v in obj.items():
             if k in drop_keys:
+                # Dropped values stay as the literal sentinel — these
+                # are paths / serial numbers we explicitly do NOT want
+                # to preserve correlation on (path-to-Python interpreter,
+                # output-root with absolute path, etc.).
                 out[k] = _REDACTED
                 continue
             out[k] = _walk_redact(v, replacements, drop_keys)
@@ -56,31 +118,49 @@ def _walk_redact(obj: Any, replacements: dict[str, str], drop_keys: set[str]) ->
 
 
 def _collect_replacements(manifest: dict[str, Any], static: dict[str, Any]) -> dict[str, str]:
-    """Build the search-and-replace table from identifying values."""
+    """Build the search-and-replace table from identifying values.
+
+    Every identifier maps to a stable hash token so downstream
+    correlations (same-user-across-PIDs, same-host-across-runs) survive
+    redaction. Field-review M1.
+    """
     repl: dict[str, str] = {}
-    for k in ("hostname", "fqdn"):
-        v = manifest.get(k)
-        if isinstance(v, str) and v:
-            repl[v] = f"HOST_{_REDACTED}"
-    # BIOS + disk serials hide inside static
+
+    # Hostname + FQDN map to the SAME hash so `BOX1` and `BOX1.corp.local`
+    # collapse onto one consistent token in the report.
+    host = manifest.get("hostname")
+    if isinstance(host, str) and host:
+        host_token = _stable_hash(host, "HOST")
+        repl[host] = host_token
+        fqdn = manifest.get("fqdn")
+        if isinstance(fqdn, str) and fqdn and fqdn != host:
+            repl[fqdn] = host_token
+    else:
+        fqdn = manifest.get("fqdn")
+        if isinstance(fqdn, str) and fqdn:
+            repl[fqdn] = _stable_hash(fqdn, "HOST")
+
+    # BIOS + disk serials hide inside static_snapshot.
     bios = static.get("bios") or {}
     for k in ("SerialNumber", "SMBIOSBIOSVersion"):
         v = bios.get(k)
         if isinstance(v, str) and v:
-            repl[v] = _REDACTED
+            repl[v] = _stable_hash(v, "BIOS")
     for d in (static.get("disks") or []):
         phys = d.get("_physical_drive") if isinstance(d, dict) else None
         if isinstance(phys, dict):
             ser = phys.get("SerialNumber")
             if isinstance(ser, str) and ser:
-                repl[ser] = _REDACTED
+                repl[ser] = _stable_hash(ser, "DISK")
     bb = static.get("baseboard") or {}
     if isinstance(bb.get("SerialNumber"), str) and bb["SerialNumber"]:
-        repl[bb["SerialNumber"]] = _REDACTED
-    # strip C:\Users\<name>\ style paths
+        repl[bb["SerialNumber"]] = _stable_hash(bb["SerialNumber"], "BB")
+
+    # Username — appears in process owners (`KTM\ankenbrand`) and as the
+    # home-dir component of paths (`C:\Users\ankenbrand\...`).
     user = os.environ.get("USERNAME") or os.environ.get("USER")
     if user:
-        repl[user] = _REDACTED
+        repl[user] = _stable_hash(user, "USER")
     return repl
 
 

@@ -18,6 +18,28 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **M1** (privacy redaction at capture-time): `monitor --redact` flag.
+  When set, after the run finishes the sanitize pass runs automatically,
+  produces a `<run_id>_sanitized` sibling folder, and verifies the
+  redaction with the same `sanitizer_verify` self-check the post-hoc
+  command uses. The original run is kept on disk for local analysis;
+  the sanitized copy is what gets shipped to a vendor.
+- **M1 / sanitizer hardening**: identifiers (hostname / FQDN / username
+  / BIOS / disk / baseboard serial) are now replaced by **stable
+  hashes** (`HOST-7f3a`, `USER-bb9c`, `BIOS-3e2d`, …) instead of the
+  literal `[REDACTED]`. Same input → same hash, so cross-process
+  attribution survives redaction (you can still see that two PIDs
+  belong to the same user, just not which one). Hashes are
+  blake2b-2-bytes → 4 hex chars per token. Hostname and FQDN map to
+  the same token so `BOX1` / `BOX1.corp.local` collapse correctly.
+- **M1 / cmdline secret stripping**: the sanitizer now runs a
+  pre-pass against every string field that strips credential-shaped
+  substrings before the identifier substitution: `--password=...`,
+  `--token ...`, `Authorization: Bearer ...`, raw JWTs, AWS access
+  keys (`AKIA...`), GitHub tokens (`ghp_`, `github_pat_`). Cmdline
+  capture isn't persisted yet, but the verdict / tags / arbitrary
+  text fields are also covered.
+
 - **C2** (cross-vendor EDR support): replaced the hardcoded
   `{"msmpeng.exe", "mssense.exe", "mpcmdrun.exe", "smartscreen.exe",
   "nissrv.exe", "windowsdefender.exe"}` Microsoft-only set in the

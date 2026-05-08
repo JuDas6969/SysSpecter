@@ -63,6 +63,14 @@ def _build_parser() -> argparse.ArgumentParser:
     m.add_argument("--phase3", action="store_true",
                    help="Enable all Phase 3 optional collectors: --gpu --event-logs --etw")
 
+    m.add_argument("--redact", action="store_true",
+                   help="After the run finishes, also produce a sanitized "
+                        "sibling folder with hostname / username / serials "
+                        "replaced by stable hashes (HOST-7f3a, USER-bb9c, …) "
+                        "and credential-looking strings stripped from text "
+                        "fields. Use this when the run will be shared with "
+                        "an external vendor.")
+
     c = sub.add_parser("compare", help="Compare multiple completed runs")
     c.add_argument("--runs", nargs="+", default=None,
                    help="Explicit list of run folders to compare")
@@ -167,13 +175,35 @@ def _cmd_monitor(args: argparse.Namespace) -> int:
         enable_etw_disk=args.etw or args.phase3,
     )
     try:
-        run_monitor(config)
+        run_dir = run_monitor(config)
     except Exception as e:
         from sysspecter.paths import OutputRootError
         if isinstance(e, OutputRootError):
             print(f"\nERROR: {e}\n", file=sys.stderr)
             return 2
         raise
+
+    # Field-review M1: --redact produces a sanitized sibling folder so
+    # the operator can hand the run to a vendor without exporting a
+    # second time. The original run is kept intact for local analysis.
+    if getattr(args, "redact", False) and run_dir:
+        try:
+            from sysspecter.sanitizer import sanitize_run
+            from sysspecter.sanitizer_verify import verify
+            sanitized = sanitize_run(run_dir)
+            leaks = verify(sanitized)
+            if leaks:
+                print(
+                    f"\nWARNING: --redact left {len(leaks)} identifier "
+                    f"occurrence(s) in {sanitized}. Review before sharing.\n",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"\nSanitized copy ready: {sanitized}\n")
+        except Exception as e:
+            print(f"\nWARNING: --redact failed: {e}. "
+                  f"Original run at {run_dir} is unchanged.\n",
+                  file=sys.stderr)
     return 0
 
 

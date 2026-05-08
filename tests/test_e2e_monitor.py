@@ -42,7 +42,11 @@ def test_monitor_5_seconds_produces_report(tmp_path: Path) -> None:
             "--interval", "1",
             "--output-root", str(out_root),
         ],
-        capture_output=True, text=True, timeout=120,
+        # 240 s timeout: most of that is the static snapshot's WMI
+        # query chain (`Get-CimInstance` × 8). On a slow / busy
+        # Windows host that alone can run 60 s+; the test must not
+        # be flaky on hardware that's just under load.
+        capture_output=True, text=True, timeout=240,
         cwd=str(REPO),
     )
 
