@@ -142,6 +142,10 @@ def analyze_run(
             "slowdowns": [],
             "leaks": {"memory": [], "handles": [], "threads": []},
             "deadlocks": [],
+            "process_tree": {
+                "by_parent": [], "spawn_counts": {}, "exit_counts": {},
+                "total_pids_seen": 0, "total_pairs_seen": 0,
+            },
             "offenders": {},
             "apps": {},
             "network_attribution": {"by_app": [], "by_pid": [], "samples": 0},
@@ -201,6 +205,13 @@ def analyze_run(
     from .deadlocks import detect_deadlocks
     deadlocks = detect_deadlocks(rd.process_rows, th)
 
+    # Field-review A4: parent → child aggregation so the report can
+    # show "X spawned 15 children of name Y" without the operator
+    # cross-referencing process_events.json by hand.
+    logger.info("building process tree")
+    from .process_tree import build_process_tree
+    process_tree = build_process_tree(rd.process_rows, rd.process_events)
+
     logger.info("ranking offenders")
     offenders = rank_offenders(rd.process_rows, top_n=10)
     apps = rank_apps(rd.process_rows, top_n=10)
@@ -255,6 +266,7 @@ def analyze_run(
         "slowdowns": slowdowns,
         "leaks": leaks,
         "deadlocks": deadlocks,
+        "process_tree": process_tree,
         "offenders": offenders,
         "apps": apps,
         "network_attribution": network_attribution,

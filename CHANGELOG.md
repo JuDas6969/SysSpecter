@@ -18,6 +18,20 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A4** (process-tree visual): new analyzer module
+  `sysspecter/analyzer/process_tree.py` aggregates the H3 schema
+  (`ppid` + `parent_name` per sample) and the H4 always-on
+  `process_events.json` into a parent → child relationship view.
+  Findings carry `process_tree.by_parent` (sorted by total peak RSS
+  desc, capped at 50 pairs) plus per-name `spawn_counts` and
+  `exit_counts` from the event stream. HTML report renders a
+  dedicated "Process tree" section: one row per
+  (parent_name, child_name) pair with instance count, total peak
+  RSS, sample count, and example PIDs. Worker-pool architectures
+  (e.g. supervisor → 15 hyperd → 4 motodb) are now visible in 5
+  seconds instead of after parsing raw event JSON. 8 contract tests
+  in `tests/test_process_tree.py`.
+
 - **A2** (deadlock-after-leak detection): new analyzer module
   `sysspecter/analyzer/deadlocks.py` and a new finding type
   `deadlock_suspected` in `findings.json`. Detects the canonical

@@ -360,7 +360,12 @@ tool produced. Numbering is the ID used in the field-review document.
   the finding. HTML report ships a dedicated section.
 - [ ] **A3** — periodicity detection on system metrics (autocorrelation
   finds Defender / EDR / SCM cycles).
-- [ ] **A4** — process-tree visual reconstruction in HTML report.
+- [x] **A4** — `sysspecter/analyzer/process_tree.py` aggregates
+  parent → child relationships from H3's `parent_name` + H4's
+  `process_events.json`. HTML report shows one row per
+  (parent_name, child_name) pair with instance counts, peak RSS
+  total, and example PIDs. Worker-pool architectures visible in
+  5 seconds instead of after parsing raw events.
 - [ ] **A6** — cap-window-aware scoring (current scores normalize over
   full run length, comparable scores require canonical windows).
 
