@@ -66,6 +66,80 @@ def _series_for_pid(
     return buckets
 
 
+def _sliding_window_stats(
+    points: list[tuple[float, float, str]],
+    *,
+    window_seconds: float = 3600.0,
+    stride_seconds: float = 600.0,
+    min_samples: int = 30,
+) -> list[dict[str, Any]]:
+    """Field-review A1: per-PID sliding-window slope/R²/mono.
+
+    The legacy `_trend_stats` regresses over the entire run. On a long
+    run with a clear leak phase followed by a plateau (e.g. an 8 h
+    leak in a 36 859 s capture), the post-plateau samples dilute the
+    slope below the leak threshold and the candidate is missed.
+
+    Sliding-window analysis catches the leak phase even when it's a
+    minority of the run. Each window in the returned list carries
+    its own slope / R² / mono / sample count so callers can pick the
+    peak-slope window for grading.
+    """
+    if not points:
+        return []
+    pts = sorted(points, key=lambda p: p[0])
+    t_min = pts[0][0]
+    t_max = pts[-1][0]
+    if t_max - t_min < window_seconds * 0.5:
+        # Run shorter than half a window — sliding doesn't help.
+        return []
+
+    out: list[dict[str, Any]] = []
+    t_start = t_min
+    while t_start < t_max - window_seconds * 0.25:
+        t_end = t_start + window_seconds
+        win = [(t, v) for (t, v, _n) in pts if t_start <= t <= t_end]
+        if len(win) >= min_samples:
+            xs = [p[0] for p in win]
+            ys = [p[1] for p in win]
+            smooth = moving_average(ys, max(5, len(ys) // 20))
+            slope = linear_regression_slope(xs, smooth)
+            if slope is not None:
+                out.append({
+                    "window_start_s": round(xs[0], 2),
+                    "window_end_s": round(xs[-1], 2),
+                    "slope": slope,
+                    "r2": linear_regression_r2(xs, smooth) or 0.0,
+                    "mono": monotonic_nondecreasing_ratio(smooth),
+                    "samples": len(win),
+                })
+        t_start += stride_seconds
+    return out
+
+
+def _find_plateau_start(
+    windows: list[dict[str, Any]],
+    growth_slope_bytes_per_s: float,
+    plateau_slope_bytes_per_s: float = 10_000.0,
+) -> float | None:
+    """Find the first window where the slope drops below
+    `plateau_slope_bytes_per_s` AFTER at least one window with slope
+    >= `growth_slope_bytes_per_s`. Returns the window's start time
+    (= when the leak phase ended), or None if no transition was seen.
+
+    Default plateau threshold (10 KB/s) per field-review A1.
+    """
+    if not windows:
+        return None
+    growth_seen = False
+    for w in windows:
+        if w["slope"] >= growth_slope_bytes_per_s:
+            growth_seen = True
+        elif growth_seen and w["slope"] < plateau_slope_bytes_per_s:
+            return float(w["window_start_s"])
+    return None
+
+
 def _trend_stats(
     points: list[tuple[float, float, str]],
 ) -> dict[str, Any] | None:
@@ -179,26 +253,49 @@ def detect_memory_leaks(
         stats = _trend_stats(points)
         if stats is None or stats["duration"] < th.leak_min_duration_seconds:
             continue
-        slope = stats["slope"]
         s_val = stats["start_val"]
         e_val = stats["end_val"]
         dur = stats["duration"]
         name = stats["name"]
         growth_bytes = max(0.0, e_val - s_val)
-        # Field-review C1: stack-aware growth floor. Browsers / JVM
-        # start big, so a 20 MB growth is rounding noise on those
-        # but a real signal on a 100 MB native process.
         stack = _stack_for_pid(process_rows, pid)
         profile = for_stack(stack)
         if growth_bytes < profile.rss_min_growth_mb * 1024 * 1024:
             continue
         growth_ratio = (growth_bytes / s_val) if s_val > 0 else 0.0
+
+        # Field-review A1: sliding-window analysis catches leaks that
+        # the full-run regression dilutes (e.g. an 8 h leak followed
+        # by a 2 h plateau in a 10 h capture). If the peak window's
+        # slope is steeper than the full-run slope, grade by IT — the
+        # full-run number is the "average" and hides the leak phase.
+        windows = _sliding_window_stats(points)
+        peak_window: dict[str, Any] | None = None
+        if windows:
+            peak_window = max(windows, key=lambda w: w["slope"])
+
+        if peak_window and peak_window["slope"] > stats["slope"]:
+            grading_slope = peak_window["slope"]
+            grading_r2 = peak_window["r2"]
+            grading_mono = peak_window["mono"]
+            # The peak window represents the growth phase explicitly,
+            # so the full-run plateau heuristic doesn't apply. Pass
+            # 0 so it never disqualifies — we already isolated growth.
+            grading_plateau = 0.0
+            primary_source = "peak_window"
+        else:
+            grading_slope = stats["slope"]
+            grading_r2 = stats["r2"]
+            grading_mono = stats["mono"]
+            grading_plateau = stats["plateau"]
+            primary_source = "full_run"
+
         confidence = _grade_confidence(
-            slope=slope,
+            slope=grading_slope,
             slope_unit=th.leak_min_slope_bytes_per_sec,
-            r2=stats["r2"],
-            mono=stats["mono"],
-            plateau=stats["plateau"],
+            r2=grading_r2,
+            mono=grading_mono,
+            plateau=grading_plateau,
             growth_ratio=growth_ratio,
             end_val=e_val,
             thresholds={"strong_growth": 0.5, "likely_growth": 0.2},
@@ -207,7 +304,16 @@ def detect_memory_leaks(
         if confidence is None:
             continue
 
-        out.append({
+        # When did the leak phase end? Annotate the transition point
+        # for the operator (only set when we found a real growth →
+        # plateau transition).
+        growth_phase_end_s = _find_plateau_start(
+            windows,
+            growth_slope_bytes_per_s=th.leak_min_slope_bytes_per_sec
+                                     * profile.slope_multiplier,
+        ) if windows else None
+
+        finding: dict[str, Any] = {
             "kind": "memory_leak_candidate",
             "confidence": confidence,
             "pid": pid,
@@ -219,17 +325,50 @@ def detect_memory_leaks(
             "growth_mb": round(growth_bytes / (1024 * 1024), 1),
             "growth_ratio": round(growth_ratio, 2),
             "duration_s": round(dur, 1),
-            "slope_bytes_per_sec": round(slope, 1),
-            "r2": round(stats["r2"], 3),
-            "monotonic_ratio": round(stats["mono"], 3),
+            "slope_bytes_per_sec": round(grading_slope, 1),
+            "r2": round(grading_r2, 3),
+            "monotonic_ratio": round(grading_mono, 3),
             "plateau_fraction": round(stats["plateau"], 3),
-            "description": (
+            # Field-review A1: provenance + sliding-window detail.
+            "slope_source": primary_source,
+            "windows_evaluated": len(windows),
+            "peak_window": (
+                {
+                    "start_s": peak_window["window_start_s"],
+                    "end_s": peak_window["window_end_s"],
+                    "slope_bytes_per_sec": round(peak_window["slope"], 1),
+                    "r2": round(peak_window["r2"], 3),
+                    "samples": peak_window["samples"],
+                }
+                if peak_window else None
+            ),
+            "growth_phase_end_s": (
+                round(growth_phase_end_s, 1) if growth_phase_end_s is not None
+                else None
+            ),
+        }
+        if peak_window:
+            finding["description"] = (
                 f"{name} (pid {pid}, stack={stack or 'native'}) RSS grew from "
                 f"{s_val/1024/1024:.1f}MB to {e_val/1024/1024:.1f}MB over "
-                f"{dur:.0f}s (slope {slope/1024:.1f} KB/s, R²={stats['r2']:.2f}, "
-                f"monotonic={stats['mono']*100:.0f}%). Confidence: {confidence}."
-            ),
-        })
+                f"{dur:.0f}s. Peak growth-window "
+                f"{peak_window['window_start_s']:.0f}–"
+                f"{peak_window['window_end_s']:.0f} s at "
+                f"{peak_window['slope']/1024:.1f} KB/s "
+                f"(R²={peak_window['r2']:.2f})"
+                + (f"; plateaued at {growth_phase_end_s:.0f} s"
+                   if growth_phase_end_s is not None else "")
+                + f". Confidence: {confidence}."
+            )
+        else:
+            finding["description"] = (
+                f"{name} (pid {pid}, stack={stack or 'native'}) RSS grew from "
+                f"{s_val/1024/1024:.1f}MB to {e_val/1024/1024:.1f}MB over "
+                f"{dur:.0f}s (slope {grading_slope/1024:.1f} KB/s, "
+                f"R²={grading_r2:.2f}, monotonic={grading_mono*100:.0f}%). "
+                f"Confidence: {confidence}."
+            )
+        out.append(finding)
     return sorted(out, key=lambda e: e["growth_mb"], reverse=True)
 
 

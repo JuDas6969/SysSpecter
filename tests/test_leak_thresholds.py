@@ -126,7 +126,7 @@ def test_jvm_at_xmx_plateau_is_not_flagged() -> None:
     leaks = detect_memory_leaks(rows, Thresholds())
     assert leaks == [], (
         f"JVM at -Xmx must NOT be flagged with C1 thresholds; got: "
-        f"{[(l['process_name'], l['confidence'], l['growth_mb']) for l in leaks]}"
+        f"{[(le['process_name'], le['confidence'], le['growth_mb']) for le in leaks]}"
     )
 
 

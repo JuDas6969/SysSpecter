@@ -346,8 +346,13 @@ tool produced. Numbering is the ID used in the field-review document.
 
 ### Analyzer engine
 
-- [ ] **A1** — sliding-window per-PID linear regression for leak
-  detection (current heuristic gets diluted by post-plateau samples).
+- [x] **A1** — sliding-window per-PID linear regression in
+  `analyzer/leaks.py::_sliding_window_stats`. 1-h window / 10-min
+  stride. `detect_memory_leaks` picks the peak-slope window for
+  grading when it beats the full-run slope, with provenance
+  annotated as `slope_source`. New `_find_plateau_start` annotates
+  the leak-phase end. Catches the MotoDB-pattern (8 h leak +
+  2 h plateau in a 10 h run) the old heuristic missed.
 - [ ] **A2** — plateau / deadlock detection (RSS growth then RSS+CPU
   flat for 10 min).
 - [ ] **A3** — periodicity detection on system metrics (autocorrelation

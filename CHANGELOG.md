@@ -18,6 +18,25 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A1** (sliding-window leak detection): the legacy
+  `detect_memory_leaks` regressed over the entire run, which on long
+  captures meant a clear leak phase followed by a plateau got its
+  slope diluted below threshold and the leak was MISSED. Motivating
+  case: the production MotoDB analysis on a 49 309 s run where the
+  leak ran for 8 hours, plateaued for 2, and the full-run slope was
+  masked by the post-plateau samples. New `_sliding_window_stats`
+  function computes slope / R² / monotonic-ratio per 1-h window
+  with 10-min stride. `detect_memory_leaks` picks the peak-slope
+  window for grading when its slope exceeds the full-run slope —
+  catching leaks the old path missed without raising false-positives
+  on short clean linear leaks (which still grade through the
+  full-run path). New `_find_plateau_start` annotates the moment
+  the leak phase ended (slope drops below 10 KB/s after a sustained
+  growth phase). Findings now carry `slope_source` (`peak_window`
+  vs `full_run`), `windows_evaluated`, `peak_window` (start, end,
+  slope, R², samples), and `growth_phase_end_s`. 8 contract tests
+  in `tests/test_sliding_window_leaks.py`.
+
 - **C1** (stack-aware leak detection): the leak heuristic in
   `analyzer/leaks.py` was tuned for native / Matlab / .NET-desktop
   workloads. On customer hosts running JVM, Chromium-family browsers
