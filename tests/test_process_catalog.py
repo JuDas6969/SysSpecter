@@ -154,6 +154,34 @@ def test_missing_catalog_file_returns_empty(tmp_path: Path) -> None:
     assert cat.display_name("foo.exe") == "Foo"
 
 
+def test_catalog_first_call_does_not_deadlock() -> None:
+    """Regression: catalog() acquired _cache_lock and then called reload()
+    which also tried to acquire the same lock. With a plain Lock this
+    deadlocked the entire analyzer pipeline on the first cold call. The
+    fix is to use RLock so the same thread can re-enter.
+
+    Detected during the v1.1.0 release audit — the full pytest suite
+    hung on test_analysis_window because analyze_run -> rank_offenders
+    -> catalog() never returned.
+    """
+    import threading
+
+    # Force a cold start so catalog() must call reload() while holding the lock.
+    pc._cache = None
+    done = threading.Event()
+    result: list[pc.Catalog] = []
+
+    def _call() -> None:
+        result.append(pc.catalog())
+        done.set()
+
+    t = threading.Thread(target=_call, daemon=True)
+    t.start()
+    # 5 s is generous; on a working build this returns in ~50 ms.
+    assert done.wait(timeout=5.0), "catalog() deadlocked on cold start"
+    assert isinstance(result[0], pc.Catalog)
+
+
 def test_names_in_category_returns_lowercased(tmp_path: Path) -> None:
     catalog_file = tmp_path / "process_catalog.json"
     catalog_file.write_text(json.dumps({

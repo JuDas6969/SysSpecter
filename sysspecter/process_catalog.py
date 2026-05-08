@@ -37,7 +37,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from threading import Lock
+from threading import RLock
 
 from .logging_setup import get_logger
 
@@ -212,7 +212,7 @@ def _load_from_path(path: str) -> list[CatalogEntry]:
 
 # Cache + lock so concurrent threads don't double-load.
 _cache: Catalog | None = None
-_cache_lock = Lock()
+_cache_lock = RLock()
 
 
 def reload() -> Catalog:
