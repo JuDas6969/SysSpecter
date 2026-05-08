@@ -34,7 +34,12 @@
     <div class="kv"><div class="k">Mode</div><div class="v">{{ manifest.mode }}</div></div>
     <div class="kv"><div class="k">Started</div><div class="v">{{ manifest.started_at }}</div></div>
     <div class="kv"><div class="k">Ended</div><div class="v">{{ manifest.ended_at }}</div></div>
-    <div class="kv"><div class="k">Actual duration</div><div class="v">{{ manifest.duration_actual_seconds }} s</div></div>
+    {% if analysis_window and analysis_window.trimmed %}
+    <div class="kv"><div class="k">Full run</div><div class="v">{{ analysis_window.full_run_duration_seconds or '—' }} s</div></div>
+    <div class="kv"><div class="k">Analyzed window</div><div class="v">{{ analysis_window.window_start_seconds }} s … {{ analysis_window.window_end_seconds }} s ({{ analysis_window.window_duration_seconds }} s, {{ analysis_window.samples_analyzed }} samples)</div></div>
+    {% else %}
+    <div class="kv"><div class="k">Duration</div><div class="v">{{ analysis_window.window_duration_seconds if analysis_window else manifest.duration_actual_seconds }} s ({{ analysis_window.samples_analyzed if analysis_window else scores.sample_count }} samples)</div></div>
+    {% endif %}
     <div class="kv"><div class="k">Interval</div><div class="v">{{ manifest.interval_seconds }} s</div></div>
     <div class="kv"><div class="k">Stop reason</div><div class="v">{{ manifest.stop_reason }}</div></div>
     <div class="kv"><div class="k">Privilege</div><div class="v">{{ manifest.privilege_level }}</div></div>

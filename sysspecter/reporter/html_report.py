@@ -433,12 +433,21 @@ def _render(
             f"Only {len(system_rows)} system samples captured — findings have low statistical weight."
         )
 
+    # Resolved analysis window (B1) — single source of truth for which
+    # part of the run is being shown. Falls back to None for legacy
+    # findings.json files written before this field existed.
+    analysis_window = (
+        (findings.get("analysis_window") if isinstance(findings, dict) else None)
+        or (scores.get("analysis_window") if isinstance(scores, dict) else None)
+    )
+
     return tpl.render(
         css=_load_css(),
         manifest=manifest,
         static=static,
         findings=findings,
         scores=scores,
+        analysis_window=analysis_window,
         score_cards=score_cards,
         score_detail_rows=score_detail_rows,
         cpu_chart=cpu_chart,

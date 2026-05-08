@@ -296,8 +296,12 @@ tool produced. Numbering is the ID used in the field-review document.
 - [x] **B3** — PDH counter rollover on `ctx_switches_per_sec` /
   `interrupts_per_sec`: negative deltas surface as `None` instead of
   `~-1.5e8` poisoning the timeline.
-- [ ] **B1** — three-way duration mismatch (scores.json vs CSV vs
-  manifest). Single source of truth required at score time. **Open.**
+- [x] **B1** — three-way duration mismatch resolved. Both scores.json
+  and findings.json now stamp an `analysis_window` block (start / end /
+  duration / samples_analyzed / full_run_duration_seconds / trimmed)
+  that downstream consumers (HTML report, comparison, splitter) read
+  as the single source of truth. Contract pinned in
+  `tests/test_analysis_window.py`.
 - [ ] **B4** — `cpu_freq_current_mhz` reads WMI nominal P-state, never
   reflects turbo. Replace with `\Processor Information(*)\% Processor
   Performance` × base-clock, or `CallNtPowerInformation`. **Open.**

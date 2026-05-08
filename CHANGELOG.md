@@ -8,6 +8,18 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed (data correctness — from production-use review)
 
+- **B1**: `scores.json` and `findings.json` now both carry an
+  `analysis_window` block — single source of truth for "what was
+  actually analyzed". Resolves the three-way duration ambiguity where
+  the same run reported 39 samples / 800 s in scores, 344 / 7998 s in
+  the CSV, and 49309 s in the manifest. The window records:
+  `window_start_seconds`, `window_end_seconds`,
+  `window_duration_seconds`, `samples_analyzed`,
+  `full_run_duration_seconds` (untrimmed original),
+  `requested_window_*` (what the caller asked for), and `trimmed: bool`.
+  HTML report now shows "Full run: X s / Analyzed window: Y..Z (W
+  samples)" when --trim-seconds was used. Tested in
+  `tests/test_analysis_window.py` (4 contract tests).
 - **B2**: `commit_used_bytes` and `commit_total_bytes` are now populated
   via `GlobalMemoryStatusEx` (Win32). Previously emitted as None for
   every sample despite being declared in the schema, so downstream
