@@ -18,6 +18,24 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A3** (periodic-pattern detection): new analyzer module
+  `sysspecter/analyzer/periodicity.py` runs Pearson autocorrelation
+  on system-level (CPU, network, disk) and per-PID (CPU) metrics
+  to surface AV / EDR / scheduler cycles automatically. Catches
+  the field-review's three production patterns: Defender-scan
+  ~593 s, MsSense ~989 s, NetSetupSvc ~291 s. All-stdlib — no
+  scipy / numpy. 5-second binning, lag range 30 s..30 min,
+  correlation threshold 0.30, top 3 per system metric / top 1
+  per PID. Findings carry `metric`, `period_seconds`, `strength`,
+  and a human-readable description; per-PID entries also carry
+  `pid` and `process_name`. HTML report shows a dedicated
+  "Periodic patterns" section with a system-metrics table and a
+  per-process-CPU table. 12 contract tests in
+  `tests/test_periodicity.py` covering primitive autocorrelation
+  math, clean-sine detection, square-pulse (EDR-shaped) detection,
+  noise rejection (no false positives on random uniform), and the
+  per-PID path.
+
 - **A6** (cap-window-aware scoring): scores normalised over the
   whole run aren't comparable across runs of different lengths —
   a 30-min run and an 8-h run produce different statistical

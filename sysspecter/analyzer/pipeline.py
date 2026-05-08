@@ -146,6 +146,13 @@ def analyze_run(
                 "by_parent": [], "spawn_counts": {}, "exit_counts": {},
                 "total_pids_seen": 0, "total_pairs_seen": 0,
             },
+            "periodicities": {
+                "system": [], "per_process": [],
+                "method": "autocorrelation",
+                "bin_seconds": 5.0,
+                "min_period_seconds": 30.0,
+                "max_period_seconds": 1800.0,
+            },
             "offenders": {},
             "apps": {},
             "network_attribution": {"by_app": [], "by_pid": [], "samples": 0},
@@ -211,6 +218,12 @@ def analyze_run(
     logger.info("building process tree")
     from .process_tree import build_process_tree
     process_tree = build_process_tree(rd.process_rows, rd.process_events)
+
+    # Field-review A3: detect periodic patterns (Defender scans, EDR
+    # heartbeats, scheduled tasks). Autocorrelation on 5-second bins.
+    logger.info("detecting periodic patterns")
+    from .periodicity import detect_periodicities
+    periodicities = detect_periodicities(rd.system_rows, rd.process_rows)
 
     logger.info("ranking offenders")
     offenders = rank_offenders(rd.process_rows, top_n=10)
@@ -285,6 +298,7 @@ def analyze_run(
         "leaks": leaks,
         "deadlocks": deadlocks,
         "process_tree": process_tree,
+        "periodicities": periodicities,
         "offenders": offenders,
         "apps": apps,
         "network_attribution": network_attribution,

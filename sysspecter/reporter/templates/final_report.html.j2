@@ -204,6 +204,44 @@
   {% endif %}
 </div>
 
+{% if findings.periodicities and (findings.periodicities.system or findings.periodicities.per_process) %}
+<h2>Periodic patterns
+  <span class="small">(detected by autocorrelation — typical AV / EDR / scheduler cycles)</span></h2>
+<div class="card">
+  {% if findings.periodicities.system %}
+  <h3>System metrics</h3>
+  <table><thead><tr>
+    <th>metric</th><th>period</th><th>strength</th><th>finding</th>
+  </tr></thead><tbody>
+  {% for p in findings.periodicities.system %}
+  <tr>
+    <td>{{ p.label }}</td>
+    <td>{{ p.period_seconds }} s</td>
+    <td>{{ p.strength }}</td>
+    <td class="small">{{ p.description }}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+  {% endif %}
+  {% if findings.periodicities.per_process %}
+  <h3>Per-process CPU cycles</h3>
+  <table><thead><tr>
+    <th>pid</th><th>name</th><th>period</th><th>strength</th><th>finding</th>
+  </tr></thead><tbody>
+  {% for p in findings.periodicities.per_process %}
+  <tr>
+    <td>{{ p.pid }}</td>
+    <td><b>{{ p.process_name }}</b></td>
+    <td>{{ p.period_seconds }} s</td>
+    <td>{{ p.strength }}</td>
+    <td class="small">{{ p.description }}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if findings.process_tree and findings.process_tree.by_parent %}
 <h2>Process tree
   <span class="small">(parent → child, ranked by total peak RSS)</span></h2>

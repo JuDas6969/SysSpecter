@@ -358,8 +358,11 @@ tool produced. Numbering is the ID used in the field-review document.
   growth-≥1h-then-low-cpu-≥10min signature. Stack-aware (reuses
   C1 multipliers), per-PID, with both phases' aggregate stats in
   the finding. HTML report ships a dedicated section.
-- [ ] **A3** — periodicity detection on system metrics (autocorrelation
-  finds Defender / EDR / SCM cycles).
+- [x] **A3** — `sysspecter/analyzer/periodicity.py` runs Pearson
+  autocorrelation on CPU / network / disk system metrics + per-PID
+  CPU. Surfaces AV / EDR / scheduled-task cycles automatically
+  (Defender ~593 s, MsSense ~989 s patterns from the field review).
+  HTML report ships a dedicated "Periodic patterns" section.
 - [x] **A4** — `sysspecter/analyzer/process_tree.py` aggregates
   parent → child relationships from H3's `parent_name` + H4's
   `process_events.json`. HTML report shows one row per
