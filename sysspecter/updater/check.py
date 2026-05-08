@@ -48,7 +48,8 @@ def check_for_updates(*, timeout: float = _TIMEOUT_S) -> UpdateInfo | None:
             headers={"Accept": "application/vnd.github+json",
                      "User-Agent": f"sysspecter/{_CURRENT}"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+        # URL is hardcoded to a literal HTTPS GitHub API endpoint, not user input.
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310
             data = json.load(resp)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
         _log.debug("update check failed: %s", e)

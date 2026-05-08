@@ -83,7 +83,8 @@ def attribute_connections(
             pid_entry["udp_samples"] += 1
         if status:
             pid_entry["status_counts"][status] += 1
-        if remote_host and remote_host not in ("0.0.0.0", "::", "127.0.0.1", "::1", ""):
+        # B104 false positive: this is a remote-host filter, not an interface bind.
+        if remote_host and remote_host not in ("0.0.0.0", "::", "127.0.0.1", "::1", ""):  # nosec B104
             pid_entry["unique_remotes"].add(remote_host)
             pid_remotes[pid][remote_host] += 1
             app_remotes[app_key][remote_host] += 1
@@ -109,7 +110,8 @@ def attribute_connections(
             app_entry["udp_samples"] += 1
         if status:
             app_entry["status_counts"][status] += 1
-        if remote_host and remote_host not in ("0.0.0.0", "::", "127.0.0.1", "::1", ""):
+        # B104 false positive: this is a remote-host filter, not an interface bind.
+        if remote_host and remote_host not in ("0.0.0.0", "::", "127.0.0.1", "::1", ""):  # nosec B104
             app_entry["unique_remotes"].add(remote_host)
 
     def _finalize_pid(e: dict[str, Any]) -> dict[str, Any]:
