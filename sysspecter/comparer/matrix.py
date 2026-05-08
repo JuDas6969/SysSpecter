@@ -61,6 +61,11 @@ def build_matrix(runs: list[dict[str, Any]]) -> dict[str, Any]:
         disk_vals = [row.get("disk_active_pct_est") or 0.0 for row in rd.system_rows]
         lat_vals = [row.get("avg_ms") for row in rd.latency_rows if row.get("avg_ms") is not None]
         hw = _hw_summary(rd)
+        # v3-priority-2: surface cadence-quality columns alongside the
+        # metrics they govern. cadence_health = good/degraded/broken/
+        # no_data/unknown (per v3-priority-1's manifest block).
+        # Comparison consumers can filter or down-weight on these.
+        cq = m.get("cadence_quality") or {}
         rows.append({
             "run_id": m.get("run_id"),
             "hostname": m.get("hostname"),
@@ -68,6 +73,9 @@ def build_matrix(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "tags": ",".join(m.get("tags") or []),
             "duration_s": m.get("duration_actual_seconds"),
             "samples": len(rd.system_rows),
+            "cadence_health": cq.get("cadence_health") or "unknown",
+            "median_gap_s": cq.get("median_gap_seconds"),
+            "process_priority_class": m.get("process_priority_class"),
             "cpu_model": hw["cpu_model"],
             "ram_gb": hw["ram_gb"],
             "primary_disk_tier": hw["primary_disk_tier"],

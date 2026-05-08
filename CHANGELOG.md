@@ -6,6 +6,66 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (v3-priority-2: comparison-engine cadence-quality awareness)
+
+The v2 production review found the engine's biggest practical bug:
+ATLT4407 (median sample gap 18 s) was matched against MORGANA
+(median 1.1 s) on `cpu_avg`, `mem_avg`, `latency_p95_ms` etc. without
+acknowledging that one side averaged over 55 samples and the other
+over 504. Every "ATLT4407 vs anything" comparison silently misled.
+
+This release closes that hole now that v3-priority-1 ships the
+per-run `manifest.cadence_quality` block:
+
+- New `comparer/cadence_quality.py` module:
+  - `extract_per_run(loaded)` lifts each run's `cadence_quality` with
+    a back-compat path for pre-v3 runs (surfaces them as
+    `cadence_health="unknown"` / `back_compat=True`).
+  - `classify_metric(name)` returns
+    `sample_density_sensitive` / `event_count` / `static` so the
+    engine knows which columns are apples-to-undersampled-apples.
+  - `build_asymmetry_findings(per_run)` produces three patterns of
+    cross-run findings: (1) any broken-cadence participant (high
+    severity, lists affected metrics); (2) mixed-health comparison
+    (medium); (3) pairwise gap-ratio > 2× even when both sides
+    nominally good (medium). De-duplicated so a broken finding
+    swallows a redundant ratio finding.
+  - `annotate_rankings(rankings, per_run)` excludes broken/no_data
+    runs from sample-density-sensitive `best_*` rankings — the
+    headline guard. Event-count rankings (`fewest_anomalies`) are
+    unaffected. Each ordered entry carries a per-cell confidence
+    marker (`trusted` / `degraded`); each ranking has a top-level
+    `trusted: bool` reflecting whether any participant is degraded.
+
+- Comparison matrix (`matrix.py`) gains three columns:
+  `cadence_health`, `median_gap_s`, `process_priority_class`.
+
+- `comparison_findings.json` gains three new top-level fields:
+  `cadence_quality_per_run`, `cadence_quality_warnings`,
+  `rankings_with_confidence`. Cadence findings are also prepended
+  to the `root_causes` list (they rank ahead of other hypotheses
+  because if cadence is broken, every other inference downstream is
+  built on shaky data).
+
+- `comparison_scores.json` headline verdicts now read the cadence-
+  annotated rankings instead of the raw ones — so an under-sampled
+  run can no longer win a sample-density-sensitive `best_*` slot.
+
+- HTML + Markdown reports gain a "Cadence quality" section at the
+  top (above the verdicts). When all participants are healthy, a
+  green confirmation banner. When asymmetric, a red banner listing
+  the warnings + a per-run cadence table (health pill, median /
+  p95 / max gap, samples, priority class). Cadence-degraded
+  rankings get a visible pill in the verdicts list so the reader
+  sees why the headline is qualified.
+
+- 22 new unit tests pinning the ATLT4407-vs-MORGANA case end-to-end
+  (broken finding fires; ATLT4407 excluded from `lowest_cpu_avg`;
+  MORGANA wins; `fewest_anomalies` keeps both; back-compat path
+  for pre-v3 runs surfaces as unknown without raising).
+
+381 unit tests pass (was 359), ruff clean, bandit clean.
+
 ### Added (v3-priority-1: cadence visibility — S1 + S3)
 
 The v2 production-test review on ATLT4407 (HP EliteBook 840 G8 / i5-1145G7

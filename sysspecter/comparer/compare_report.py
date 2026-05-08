@@ -28,6 +28,17 @@ td.diverge { background: #fff8e6; font-weight: 600; }
 ul.obs li { margin-bottom: 6px; }
 code { background: #f3f5fa; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 .mode-banner { background: #e6f4ff; border-left: 4px solid #2c7be5; padding: 10px 14px; border-radius: 4px; margin-bottom: 14px; }
+.cadence-banner { padding: 12px 14px; border-radius: 4px; margin-bottom: 14px; border-left: 4px solid #cf1322; background: #fff1f0; }
+.cadence-banner.medium { border-left-color: #faad14; background: #fffbe6; }
+.cadence-banner.low { border-left-color: #52c41a; background: #f6ffed; }
+.cadence-banner h3 { margin: 0 0 6px 0; color: #1b2a4e; }
+.cadence-banner ul { margin: 6px 0 0 0; padding-left: 20px; }
+.cadence-pill { display: inline-block; padding: 2px 6px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; }
+.cadence-pill.good { background: #d9f7be; color: #135200; }
+.cadence-pill.degraded { background: #fff1b8; color: #874d00; }
+.cadence-pill.broken { background: #ffa39e; color: #5c0011; }
+.cadence-pill.unknown { background: #e8e8e8; color: #595959; }
+.cadence-pill.no_data { background: #d9d9d9; color: #262626; }
 .rec { border-left: 4px solid #cf1322; padding: 8px 12px; margin-bottom: 8px; background: #fff7f6; border-radius: 4px; }
 .rec.medium { border-left-color: #faad14; background: #fffbe6; }
 .rec.low { border-left-color: #52c41a; background: #f6ffed; }
@@ -55,15 +66,85 @@ _TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8">
   <ul>{% for r in runs %}<li><code>{{ r.run_id }}</code> — {{ r.hostname }} / {{ r.mode }} / tags: {{ r.tags | join(', ') or '—' }} ({{ r.duration_s }}s)</li>{% endfor %}</ul>
 </div>
 
+{# v3-priority-2: cadence-quality banner. Shown FIRST when any
+   participant is broken/mixed so the reader sees the caveat before
+   the headline verdicts. Green "all good" card otherwise so the
+   absence isn't ambiguous. #}
+{% if cadence_warnings %}
+{% set worst_sev = "low" %}
+{% for w in cadence_warnings %}{% if w.severity == "high" %}{% set worst_sev = "high" %}{% endif %}{% endfor %}
+{% if worst_sev != "high" %}
+{% for w in cadence_warnings %}{% if w.severity == "medium" and worst_sev != "high" %}{% set worst_sev = "medium" %}{% endif %}{% endfor %}
+{% endif %}
+<div class="cadence-banner {% if worst_sev == 'medium' %}medium{% elif worst_sev == 'low' %}low{% endif %}">
+  <h3>Cadence quality &mdash; comparison caveat</h3>
+  <p style="margin:4px 0 8px 0">
+    The runs being compared have heterogeneous sample cadence.
+    Sample-density-sensitive metrics (cpu_avg, mem_avg, latency_p95, etc.)
+    are presented with reduced confidence; cadence-immune metrics
+    (anomaly counts, leak detections) are unaffected.
+  </p>
+  <ul>
+    {% for w in cadence_warnings %}
+    <li><b>[{{ w.severity }}]</b> {{ w.hypothesis }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% else %}
+<div class="cadence-banner low">
+  <h3>Cadence quality &mdash; all participants healthy
+    <span class="cadence-pill good">good</span></h3>
+  <p style="margin:4px 0 0 0" class="small">
+    All runs sampled at &le; 1.5&times; their nominal cadence. Cross-run
+    metrics are directly comparable.
+  </p>
+</div>
+{% endif %}
+
+<h2>Per-run cadence</h2>
+<div class="card">
+  <table><thead><tr>
+    <th>run</th><th>health</th><th>nominal</th><th>median gap</th>
+    <th>p95 gap</th><th>max gap</th><th>samples</th><th>over 2&times;</th>
+    <th>over 5&times;</th><th>priority</th>
+  </tr></thead><tbody>
+  {% for p in cadence_per_run %}
+  <tr>
+    <td><code>{{ p.run_id }}</code></td>
+    <td><span class="cadence-pill {{ p.cadence_health }}">{{ p.cadence_health }}</span></td>
+    <td class="num">{{ p.nominal_interval_seconds or '—' }}s</td>
+    <td class="num">{{ p.median_gap_seconds if p.median_gap_seconds is not none else '—' }}s</td>
+    <td class="num">{{ p.p95_gap_seconds if p.p95_gap_seconds is not none else '—' }}s</td>
+    <td class="num">{{ p.max_gap_seconds if p.max_gap_seconds is not none else '—' }}s</td>
+    <td class="num">{{ p.samples_total or '—' }}</td>
+    <td class="num">{{ p.gaps_over_2x_nominal if p.gaps_over_2x_nominal is defined else '—' }}</td>
+    <td class="num">{{ p.gaps_over_5x_nominal if p.gaps_over_5x_nominal is defined else '—' }}</td>
+    <td class="small">{{ p.process_priority_class or '—' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+
 <h2>Key verdicts</h2>
 <div class="card">
   <ul>
   <li><b>Best overall:</b> <code>{{ verdicts.best_overall or '—' }}</code></li>
   <li><b>Most stable:</b> <code>{{ verdicts.most_stable or '—' }}</code></li>
   <li><b>Best efficiency:</b> <code>{{ verdicts.best_efficiency or '—' }}</code></li>
-  <li><b>Lowest avg CPU:</b> <code>{{ verdicts.lowest_cpu_avg or '—' }}</code></li>
-  <li><b>Lowest p95 latency:</b> <code>{{ verdicts.lowest_latency_p95 or '—' }}</code></li>
-  <li><b>Fewest anomalies:</b> <code>{{ verdicts.fewest_anomalies or '—' }}</code></li>
+  <li><b>Lowest avg CPU:</b> <code>{{ verdicts.lowest_cpu_avg or '—' }}</code>
+    {% if rankings_with_confidence and rankings_with_confidence.lowest_cpu_avg and not rankings_with_confidence.lowest_cpu_avg.trusted %}
+    <span class="cadence-pill degraded">cadence-degraded ranking</span>{% endif %}
+    {% if rankings_with_confidence and rankings_with_confidence.lowest_cpu_avg and rankings_with_confidence.lowest_cpu_avg.excluded %}
+    <span class="small">(excluded: {% for rid, reason in rankings_with_confidence.lowest_cpu_avg.excluded %}<code>{{ rid }}</code> {% endfor %})</span>
+    {% endif %}
+  </li>
+  <li><b>Lowest p95 latency:</b> <code>{{ verdicts.lowest_latency_p95 or '—' }}</code>
+    {% if rankings_with_confidence and rankings_with_confidence.lowest_latency_p95 and not rankings_with_confidence.lowest_latency_p95.trusted %}
+    <span class="cadence-pill degraded">cadence-degraded ranking</span>{% endif %}
+  </li>
+  <li><b>Fewest anomalies:</b> <code>{{ verdicts.fewest_anomalies or '—' }}</code>
+    <span class="small">(cadence-immune)</span>
+  </li>
   </ul>
 </div>
 
@@ -421,7 +502,13 @@ def _build_markdown(
     cfg_diff: dict[str, Any],
     hypotheses: list[dict[str, Any]],
     recommendations: list[dict[str, Any]],
+    *,
+    cadence_per_run: list[dict[str, Any]] | None = None,
+    cadence_warnings: list[dict[str, Any]] | None = None,
 ) -> str:
+    cadence_per_run = cadence_per_run or []
+    cadence_warnings = cadence_warnings or []
+
     lines = [f"# SysSpecter comparison — {comparison_id}", "_See everything. Find the cause._", ""]
     lines.append(f"**Analysis mode:** {mode_lbl} _(auto-detected from hostnames)_")
     lines.append("")
@@ -433,6 +520,45 @@ def _build_markdown(
             f"/ tags: {', '.join(m.get('tags') or []) or '—'} ({m.get('duration_actual_seconds')}s)"
         )
     lines.append("")
+
+    # v3-priority-2: cadence-quality block. Shown before the verdicts
+    # so a reader sees the caveat first.
+    if cadence_warnings:
+        lines.append("## Cadence quality — comparison caveat")
+        lines.append("")
+        lines.append(
+            "The runs being compared have heterogeneous sample cadence. "
+            "Sample-density-sensitive metrics (cpu_avg, mem_avg, "
+            "latency_p95, etc.) carry reduced confidence; cadence-immune "
+            "metrics (anomaly counts, leak detections) are unaffected."
+        )
+        lines.append("")
+        for w in cadence_warnings:
+            lines.append(f"- **[{w.get('severity')}]** {w.get('hypothesis')}")
+        lines.append("")
+    elif cadence_per_run:
+        lines.append("## Cadence quality")
+        lines.append("")
+        lines.append("All runs sampled within 1.5× their nominal cadence. "
+                     "Cross-run metrics are directly comparable.")
+        lines.append("")
+
+    if cadence_per_run:
+        lines.append("### Per-run cadence")
+        lines.append("| run | health | nominal | median gap | p95 gap | max gap | samples | priority |")
+        lines.append("|---|---|---|---|---|---|---|---|")
+        for p in cadence_per_run:
+            lines.append(
+                f"| `{p.get('run_id')}` "
+                f"| {p.get('cadence_health') or '—'} "
+                f"| {p.get('nominal_interval_seconds') or '—'}s "
+                f"| {p.get('median_gap_seconds') if p.get('median_gap_seconds') is not None else '—'}s "
+                f"| {p.get('p95_gap_seconds') if p.get('p95_gap_seconds') is not None else '—'}s "
+                f"| {p.get('max_gap_seconds') if p.get('max_gap_seconds') is not None else '—'}s "
+                f"| {p.get('samples_total') or '—'} "
+                f"| {p.get('process_priority_class') or '—'} |"
+            )
+        lines.append("")
 
     lines.append("## Verdicts")
     for k, v in verdicts.items():
@@ -543,6 +669,9 @@ def build_comparison_report(
     hypotheses: list[dict[str, Any]] | None = None,
     recommendations: list[dict[str, Any]] | None = None,
     cross_run_view: dict[str, Any] | None = None,
+    cadence_per_run: list[dict[str, Any]] | None = None,
+    cadence_warnings: list[dict[str, Any]] | None = None,
+    rankings_with_confidence: dict[str, Any] | None = None,
 ) -> None:
     env = Environment(loader=BaseLoader(), autoescape=select_autoescape())
     tpl = env.from_string(_TEMPLATE)
@@ -557,6 +686,9 @@ def build_comparison_report(
     bottlenecks = bottlenecks or {"by_primary": {}}
     hypotheses = hypotheses or []
     recommendations = recommendations or []
+    cadence_per_run = cadence_per_run or []
+    cadence_warnings = cadence_warnings or []
+    rankings_with_confidence = rankings_with_confidence or {}
 
     from .mode import mode_label
     mode_lbl = mode_label(mode)  # type: ignore[arg-type]
@@ -592,6 +724,9 @@ def build_comparison_report(
         hypotheses=hypotheses,
         recommendations=recommendations,
         cross_run_view=cross_run_view,
+        cadence_per_run=cadence_per_run,
+        cadence_warnings=cadence_warnings,
+        rankings_with_confidence=rankings_with_confidence,
     )
     tmp = paths.html + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -601,6 +736,8 @@ def build_comparison_report(
     md = _build_markdown(
         paths.comparison_id, runs, matrix, differences, problems, verdicts,
         mode_lbl, hw_diff, cfg_diff, hypotheses, recommendations,
+        cadence_per_run=cadence_per_run,
+        cadence_warnings=cadence_warnings,
     )
     with open(paths.md, "w", encoding="utf-8") as f:
         f.write(md)

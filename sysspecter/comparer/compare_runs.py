@@ -9,6 +9,11 @@ from typing import Any
 from ..logging_setup import get_logger
 from ..paths import build_comparison_paths
 from ..reporter.json_export import atomic_write_json
+from .cadence_quality import (
+    annotate_rankings,
+    build_asymmetry_findings,
+    extract_per_run,
+)
 from .compare_report import build_comparison_report
 from .cross_run_view import build_cross_run_view
 from .diagnosis import bottleneck_comparison, generate_hypotheses, generate_recommendations
@@ -113,6 +118,21 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
     matrix = build_matrix(loaded)
     write_matrix_csv(matrix, paths.matrix_csv)
 
+    # v3-priority-2: cadence-quality awareness. Lift each run's
+    # `manifest.cadence_quality` block (shipped in v3-priority-1) and
+    # build cross-run asymmetry findings + ranking annotations. Without
+    # this, an under-sampled run's mean is presented at the same visual
+    # weight as a well-sampled one — exactly the v2 production-review
+    # bug ("ATLT4407 vs MORGANA").
+    cadence_per_run = extract_per_run(loaded)
+    cadence_warnings = build_asymmetry_findings(cadence_per_run)
+    cadence_rankings = annotate_rankings(matrix["rankings"], cadence_per_run)
+    if cadence_warnings:
+        worst = next((w for w in cadence_warnings if w.get("severity") == "high"),
+                     cadence_warnings[0])
+        logger.warning("cadence-quality finding: [%s] %s",
+                       worst.get("kind"), worst.get("hypothesis"))
+
     differences = _explain_differences(loaded, matrix)
     problems = _unique_and_common_problems(loaded)
 
@@ -122,6 +142,10 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
     cfg_diff = diff_config(loaded)
     bottlenecks = bottleneck_comparison(matrix)
     hypotheses = generate_hypotheses(loaded, matrix, hw_diff, sw_diff, cfg_diff)
+    # Cadence-quality findings rank with the other root-cause hypotheses.
+    # They go FIRST because if cadence is broken, every other hypothesis
+    # downstream is built on shaky data.
+    hypotheses = list(cadence_warnings) + list(hypotheses)
     recommendations = generate_recommendations(hypotheses)
 
     # Field-review A5: lift the new schema fields (M5 machine_id,
@@ -152,6 +176,16 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         ],
         "matrix_rows": matrix["rows"],
         "rankings": matrix["rankings"],
+        # v3-priority-2: cadence-quality blocks ride alongside the
+        # rankings so consumers can refuse claims when the cadence is
+        # heterogeneous. `cadence_quality_per_run` is the per-run
+        # manifest data lifted; `cadence_quality_warnings` is the
+        # cross-run asymmetry findings; `rankings_with_confidence` is
+        # the rankings annotated with per-metric confidence + the list
+        # of runs excluded from each ranking due to broken cadence.
+        "cadence_quality_per_run": cadence_per_run,
+        "cadence_quality_warnings": cadence_warnings,
+        "rankings_with_confidence": cadence_rankings,
         "pairwise_observations": differences,
         "common_and_unique_problems": problems,
         "static_diff": {
@@ -168,13 +202,24 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
 
     atomic_write_json(paths.findings, comparison_findings)
 
+    # v3-priority-2: headline verdicts read the cadence-annotated
+    # rankings, NOT the raw rankings. This is what kept ATLT4407's
+    # under-sampled cpu_avg from beating MORGANA on the headline; it
+    # also stops the empty 0-sample run from being crowned
+    # "best_overall" (covered separately when we wire same-host rules
+    # in v3-priority-7, but the cadence guard already excludes it).
+    def _top(name: str) -> str | None:
+        annotated = cadence_rankings.get(name) or {}
+        ordered = annotated.get("ordered") or []
+        return ordered[0][0] if ordered else None
+
     comparison_scores = {
-        "best_overall": (matrix["rankings"].get("best_overall") or [[None, None]])[0][0],
-        "most_stable": (matrix["rankings"].get("best_stability") or [[None, None]])[0][0],
-        "best_efficiency": (matrix["rankings"].get("best_efficiency") or [[None, None]])[0][0],
-        "lowest_cpu_avg": (matrix["rankings"].get("lowest_cpu_avg") or [[None, None]])[0][0],
-        "lowest_latency_p95": (matrix["rankings"].get("lowest_latency_p95") or [[None, None]])[0][0],
-        "fewest_anomalies": (matrix["rankings"].get("fewest_anomalies") or [[None, None]])[0][0],
+        "best_overall": _top("best_overall"),
+        "most_stable": _top("best_stability"),
+        "best_efficiency": _top("best_efficiency"),
+        "lowest_cpu_avg": _top("lowest_cpu_avg"),
+        "lowest_latency_p95": _top("lowest_latency_p95"),
+        "fewest_anomalies": _top("fewest_anomalies"),
     }
     atomic_write_json(paths.scores, comparison_scores)
 
@@ -196,6 +241,9 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         hypotheses=hypotheses,
         recommendations=recommendations,
         cross_run_view=cross_run_view,
+        cadence_per_run=cadence_per_run,
+        cadence_warnings=cadence_warnings,
+        rankings_with_confidence=cadence_rankings,
     )
     logger.info("comparison complete: %s", paths.comparison_dir)
     return paths.comparison_dir
