@@ -204,6 +204,39 @@
   {% endif %}
 </div>
 
+{% if findings.baseline_deviations %}
+<h2>Baseline deviations
+  <span class="small">(actual usage outside the expected band for this machine class)</span></h2>
+<div class="card">
+  <p class="small">
+    Class: <b>{{ findings.baseline_deviations[0].machine_class }}</b>.
+    A deviation here doesn't necessarily mean a fault — it means the
+    machine isn't behaving like a typical member of its declared
+    class. Compare against the absolute scores above.
+  </p>
+  <table><thead><tr>
+    <th>severity</th><th>metric</th><th>expected</th>
+    <th>actual</th><th>finding</th>
+  </tr></thead><tbody>
+  {% for d in findings.baseline_deviations %}
+  <tr>
+    <td><span class="badge {{ d.severity }}">{{ d.severity }}</span></td>
+    <td>{{ d.metric }}</td>
+    <td>
+      {% if d.expected_range[1] is none %}
+        ≥ {{ d.expected_range[0] }}
+      {% else %}
+        {{ d.expected_range[0] }} – {{ d.expected_range[1] }}
+      {% endif %}
+    </td>
+    <td>{{ d.actual }}</td>
+    <td class="small">{{ d.description }}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+{% endif %}
+
 {% if findings.periodicities and (findings.periodicities.system or findings.periodicities.per_process) %}
 <h2>Periodic patterns
   <span class="small">(detected by autocorrelation — typical AV / EDR / scheduler cycles)</span></h2>

@@ -394,8 +394,14 @@ tool produced. Numbering is the ID used in the field-review document.
   Replaced hardcoded Microsoft-only sets in `analyzer/offenders.py`,
   `analyzer/bottlenecks.py`, `analyzer/grouping.py`. Pinned by 8
   contract tests.
-- [ ] **C3** — machine-class baselines (developer / kiosk / terminal-
-  server / engineering-workstation).
+- [x] **C3** — `sysspecter/analyzer/machine_class_baselines.py`
+  ships per-class baseline profiles (developer-workstation /
+  engineering-workstation / general-knowledge-worker / kiosk /
+  terminal-server / factory-floor) keyed on
+  `manifest.meta.machine_class` (M2). Metrics outside the band
+  produce `baseline_deviations` findings; HTML report has a
+  dedicated section. 15% CPU is normal on a dev box, abnormal on
+  a kiosk — pinned by tests.
 - [x] **C4** — `monitor --profile NAME` + `--list-profiles`. Shipped
   catalog: support / baseline / workload / leak-hunt / av-overhead /
   thermal / incident-snapshot / vpn-troubleshoot / security-audit.

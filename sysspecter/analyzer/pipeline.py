@@ -153,6 +153,7 @@ def analyze_run(
                 "min_period_seconds": 30.0,
                 "max_period_seconds": 1800.0,
             },
+            "baseline_deviations": [],
             "offenders": {},
             "apps": {},
             "network_attribution": {"by_app": [], "by_pid": [], "samples": 0},
@@ -224,6 +225,20 @@ def analyze_run(
     logger.info("detecting periodic patterns")
     from .periodicity import detect_periodicities
     periodicities = detect_periodicities(rd.system_rows, rd.process_rows)
+
+    # Field-review C3: machine-class baseline deviations. Reads the
+    # machine class from manifest.meta (set via --machine-class or a
+    # capture profile's suggested_meta) and flags metrics that fall
+    # outside their expected band for the class.
+    machine_class = (rd.manifest or {}).get("meta", {}).get("machine_class")
+    if machine_class:
+        logger.info("checking baselines for machine class %r", machine_class)
+        from .machine_class_baselines import detect_baseline_deviations
+        baseline_deviations = detect_baseline_deviations(
+            rd.system_rows, machine_class,
+        )
+    else:
+        baseline_deviations = []
 
     logger.info("ranking offenders")
     offenders = rank_offenders(rd.process_rows, top_n=10)
@@ -299,6 +314,7 @@ def analyze_run(
         "deadlocks": deadlocks,
         "process_tree": process_tree,
         "periodicities": periodicities,
+        "baseline_deviations": baseline_deviations,
         "offenders": offenders,
         "apps": apps,
         "network_attribution": network_attribution,

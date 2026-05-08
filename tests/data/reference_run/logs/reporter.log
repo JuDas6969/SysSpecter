@@ -12,3 +12,5 @@
 2026-05-08 15:17:36,772 INFO reporter: report ready: C:\KtmExternalTools\SysSpecter\tests\data\reference_run\final_report.html
 2026-05-08 15:59:53,790 INFO reporter: building HTML report for C:\KtmExternalTools\SysSpecter\tests\data\reference_run -> C:\KtmExternalTools\SysSpecter\tests\data\reference_run
 2026-05-08 15:59:53,956 INFO reporter: report ready: C:\KtmExternalTools\SysSpecter\tests\data\reference_run\final_report.html
+2026-05-08 17:04:04,181 INFO reporter: building HTML report for C:\KtmExternalTools\SysSpecter\tests\data\reference_run -> C:\KtmExternalTools\SysSpecter\tests\data\reference_run
+2026-05-08 17:04:04,285 INFO reporter: report ready: C:\KtmExternalTools\SysSpecter\tests\data\reference_run\final_report.html

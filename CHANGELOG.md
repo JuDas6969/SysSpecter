@@ -18,6 +18,25 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **C3** (machine-class baselines): new analyzer module
+  `sysspecter/analyzer/machine_class_baselines.py` ships per-class
+  baseline profiles (developer-workstation / engineering-workstation /
+  general-knowledge-worker / kiosk / terminal-server / factory-floor)
+  and a detector that flags metrics outside the class baseline.
+  Reads the machine class from `manifest.meta.machine_class` (set
+  via `monitor --machine-class X` from M2 or via a capture profile's
+  suggested_meta from C4). Findings are distinct from absolute
+  Thresholds — the absolute path catches acute problems on any
+  class, the baseline path catches "this machine isn't behaving
+  like a typical member of its declared class". Each finding
+  carries `severity` (high / medium / low scaled by distance from
+  band), `direction` (above / below), and a human-readable
+  `description`. HTML report ships a dedicated "Baseline deviations"
+  section. 18 contract tests covering catalog completeness, alias
+  resolution, the motivating cases (15% CPU normal on dev /
+  abnormal on kiosk), severity scaling, and back-compat
+  (no-class-declared yields no findings).
+
 - **M5** (stable machine_id): manifests now carry a hardware-derived
   identifier `machine_id` of the form `MACHINE-xxxxxxxx` (8 hex
   chars). Same hardware → same id, regardless of hostname renames,
