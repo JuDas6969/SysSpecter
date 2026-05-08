@@ -256,6 +256,24 @@ def analyze_run(
         rd.system_rows, anomalies, slowdowns, offenders, leaks, rd.latency_rows, mode, bottlenecks
     )
 
+    # Field-review A6: cap-window-aware scoring. Re-score over
+    # canonical tail windows (last 1 h, last 8 h) so this run is
+    # comparable to runs of any other length on the same fleet.
+    from .scores import compute_tail_window_scores
+    tail_scores = compute_tail_window_scores(
+        rd.system_rows, anomalies, slowdowns, offenders, leaks,
+        rd.latency_rows, mode, bottlenecks,
+        full_window_start=analysis_window["window_start_seconds"],
+        full_window_end=analysis_window["window_end_seconds"],
+    )
+    if tail_scores:
+        scores["tail_windows"] = tail_scores
+        logger.info(
+            "tail-window scoring: produced %d additional view(s) (%s)",
+            len(tail_scores),
+            ", ".join(s["window_label"] for s in tail_scores),
+        )
+
     # Stamp the resolved analysis window onto BOTH artefacts so any
     # consumer (HTML report, comparison, splitter, downstream tooling)
     # has a single source of truth. Field-review B1.

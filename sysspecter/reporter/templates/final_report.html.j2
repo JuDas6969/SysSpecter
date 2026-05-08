@@ -68,6 +68,42 @@
     Secondary: {{ scores.secondary_bottlenecks | join(', ') or '—' }}.
     Confidence: <b>{{ scores.confidence }}</b> ({{ scores.sample_count }} samples).
   </p>
+  {% if scores.tail_windows %}
+  <h3>Tail-window comparison
+    <span class="small">(scores normalised over a fixed window — comparable across runs of any length)</span></h3>
+  <table>
+    <thead><tr>
+      <th>window</th><th>samples</th><th>overall</th>
+      <th>stability</th><th>efficiency</th><th>workload</th>
+      <th>network</th><th>hygiene</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><b>full run</b><br><span class="small">{{ scores.sample_count }} s</span></td>
+        <td>{{ scores.sample_count }}</td>
+        <td><b>{{ scores.overall }}</b></td>
+        <td>{{ scores.stability.score }}</td>
+        <td>{{ scores.efficiency.score }}</td>
+        <td>{{ scores.workload_suitability.score }}</td>
+        <td>{{ scores.network_impact.score }}</td>
+        <td>{{ scores.resource_hygiene.score }}</td>
+      </tr>
+      {% for tw in scores.tail_windows %}
+      <tr>
+        <td><b>{{ tw.window_label }}</b><br>
+          <span class="small">{{ tw.window_start_seconds | int }}–{{ tw.window_end_seconds | int }} s</span></td>
+        <td>{{ tw.window_samples }}</td>
+        <td><b>{{ tw.overall }}</b></td>
+        <td>{{ tw.stability.score }}</td>
+        <td>{{ tw.efficiency.score }}</td>
+        <td>{{ tw.workload_suitability.score }}</td>
+        <td>{{ tw.network_impact.score }}</td>
+        <td>{{ tw.resource_hygiene.score }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
 </div>
 
 <h2>System profile</h2>

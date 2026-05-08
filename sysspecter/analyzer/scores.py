@@ -134,6 +134,113 @@ def resource_hygiene_score(
     }
 
 
+# ---------------------------------------------------------------------------
+# Field-review A6: cap-window-aware scoring.
+#
+# Scores computed over a fixed canonical window (e.g. "the last 1 h",
+# "the last 8 h") are comparable across runs of different lengths. The
+# legacy full-run score answers "how was the whole run?", a tail window
+# answers "how does this machine look RIGHT NOW?" — much more useful
+# for fleet trending and cross-run comparison.
+# ---------------------------------------------------------------------------
+
+
+_TAIL_WINDOWS_S = (
+    ("last_1h", 3600.0),
+    ("last_8h", 28800.0),
+)
+
+
+def _filter_by_rel(rows: list[dict[str, Any]], lo: float, hi: float
+                   ) -> list[dict[str, Any]]:
+    """Return only the rows whose `rel_seconds` falls in [lo, hi]."""
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        rel = r.get("rel_seconds")
+        if rel is None:
+            continue
+        try:
+            v = float(rel)
+        except (TypeError, ValueError):
+            continue
+        if lo <= v <= hi:
+            out.append(r)
+    return out
+
+
+def _filter_slowdowns(slowdowns: list[dict[str, Any]],
+                      lo: float, hi: float) -> list[dict[str, Any]]:
+    """Slowdown windows have their own start_rel/end_rel bounds."""
+    out: list[dict[str, Any]] = []
+    for s in slowdowns:
+        try:
+            start = float(s.get("start_rel") or s.get("rel_seconds") or 0.0)
+        except (TypeError, ValueError):
+            start = 0.0
+        try:
+            end = float(s.get("end_rel") or start)
+        except (TypeError, ValueError):
+            end = start
+        # A slowdown intersects the window if it overlaps at all.
+        if end >= lo and start <= hi:
+            out.append(s)
+    return out
+
+
+def compute_tail_window_scores(
+    system_rows: list[dict[str, Any]],
+    anomalies: list[dict[str, Any]],
+    slowdowns: list[dict[str, Any]],
+    offenders: dict[str, Any],
+    leaks: dict[str, Any],
+    latency_rows: list[dict[str, Any]],
+    mode: str,
+    bottlenecks: dict[str, Any],
+    *,
+    full_window_start: float,
+    full_window_end: float,
+) -> list[dict[str, Any]]:
+    """Compute scores over canonical tail windows so two runs of
+    different total length can be compared apples-to-apples.
+
+    Each entry in the returned list mirrors the shape of
+    ``calculate_scores`` plus the window label and bounds. Only
+    windows that fit inside the run's analysis window are emitted —
+    a 30-minute run won't produce a 1-h or 8-h tail.
+    """
+    out: list[dict[str, Any]] = []
+    duration = max(0.0, full_window_end - full_window_start)
+    for label, window_s in _TAIL_WINDOWS_S:
+        if duration < window_s:
+            continue
+        lo = max(full_window_start, full_window_end - window_s)
+        hi = full_window_end
+        win_system = _filter_by_rel(system_rows, lo, hi)
+        win_latency = _filter_by_rel(latency_rows, lo, hi)
+        win_anomalies = _filter_by_rel(anomalies, lo, hi)
+        win_slowdowns = _filter_slowdowns(slowdowns, lo, hi)
+        # Offenders + leaks are aggregated over the full run already;
+        # re-aggregating per window would change the meaning of
+        # security/hygiene. We keep the run-level dicts so those two
+        # scores represent "what was running", and let the
+        # window-sensitive scores (stability, efficiency, network
+        # impact, workload suitability) reflect the tail.
+        if len(win_system) < 5:
+            # Too few samples in the tail to score meaningfully.
+            continue
+        s = calculate_scores(
+            win_system, win_anomalies, win_slowdowns,
+            offenders, leaks, win_latency, mode, bottlenecks,
+        )
+        s["window_label"] = label
+        s["window_start_seconds"] = round(lo, 2)
+        s["window_end_seconds"] = round(hi, 2)
+        s["window_duration_seconds"] = round(hi - lo, 2)
+        s["window_samples"] = len(win_system)
+        out.append(s)
+    return out
+
+
 def calculate_scores(
     system_rows: list[dict[str, Any]],
     anomalies: list[dict[str, Any]],

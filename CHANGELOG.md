@@ -18,6 +18,24 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A6** (cap-window-aware scoring): scores normalised over the
+  whole run aren't comparable across runs of different lengths —
+  a 30-min run and an 8-h run produce different statistical
+  signals because everything depends on duration. New
+  `compute_tail_window_scores()` re-runs the score model over
+  canonical TAIL windows (`last_1h`, `last_8h`) so a fleet
+  aggregator or longitudinal trend can compare apples-to-apples.
+  Each tail score carries the same shape as the full-run score
+  plus `window_label` / `window_start_seconds` /
+  `window_end_seconds` / `window_duration_seconds` /
+  `window_samples`. Short runs emit no tail (1-h tail requires
+  ≥ 1 h duration). HTML report shows a "Tail-window comparison"
+  table side-by-side with the full-run scores. 6 contract tests
+  in `tests/test_tail_window_scores.py` covering emit-decision
+  rules, schema preservation, and the semantic check that a
+  calm-then-stormy run grades the tail LOWER on stability than
+  the full run.
+
 - **A4** (process-tree visual): new analyzer module
   `sysspecter/analyzer/process_tree.py` aggregates the H3 schema
   (`ppid` + `parent_name` per sample) and the H4 always-on

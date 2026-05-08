@@ -366,8 +366,11 @@ tool produced. Numbering is the ID used in the field-review document.
   (parent_name, child_name) pair with instance counts, peak RSS
   total, and example PIDs. Worker-pool architectures visible in
   5 seconds instead of after parsing raw events.
-- [ ] **A6** — cap-window-aware scoring (current scores normalize over
-  full run length, comparable scores require canonical windows).
+- [x] **A6** — `compute_tail_window_scores()` re-scores over
+  canonical `last_1h` and `last_8h` tails so two runs of any
+  length are comparable apples-to-apples. Tail scores ship in
+  `scores.tail_windows` array; HTML report shows a side-by-side
+  comparison table.
 
 ### Cross-domain (multi-vendor / multi-stack)
 
