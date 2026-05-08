@@ -13,6 +13,7 @@ from typing import Any
 
 from . import __version__ as _SS_VERSION
 from .config import Config
+from .machine_id import compute_machine_id
 from .paths import RunPaths
 
 
@@ -24,12 +25,18 @@ def is_admin() -> bool:
 
 
 def build_run_manifest(paths: RunPaths, config: Config) -> dict[str, Any]:
+    # Field-review M5: stable machine_id derived from durable
+    # hardware identifiers so longitudinal trending survives
+    # hostname renames.
+    mid = compute_machine_id()
     return {
         "schema_version": 2,
         "sysspecter_version": _SS_VERSION,
         "run_id": paths.run_id,
         "hostname": paths.hostname,
         "fqdn": socket.getfqdn(),
+        "machine_id": mid.machine_id,
+        "machine_id_source": mid.source,
         "started_at": paths.started_at.isoformat(timespec="seconds"),
         "ended_at": None,
         "stop_reason": None,

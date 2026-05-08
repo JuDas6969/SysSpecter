@@ -18,6 +18,18 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **M5** (stable machine_id): manifests now carry a hardware-derived
+  identifier `machine_id` of the form `MACHINE-xxxxxxxx` (8 hex
+  chars). Same hardware → same id, regardless of hostname renames,
+  re-images, or fleet-wide rename campaigns — fixing the legacy
+  longitudinal-trending bug where renaming a laptop wiped its run
+  history. Fallback chain: SMBIOS UUID → physical NIC MACs (sorted)
+  → hostname. The accompanying `machine_id_source` field tells
+  consumers which tier was used so fleet aggregators can warn on
+  the weak `hostname_fallback` tier. Pydantic schema accepts the
+  new fields; v1/v2 manifests written before this commit still
+  load. 15 contract tests in `tests/test_machine_id.py`.
+
 - **A3** (periodic-pattern detection): new analyzer module
   `sysspecter/analyzer/periodicity.py` runs Pearson autocorrelation
   on system-level (CPU, network, disk) and per-PID (CPU) metrics

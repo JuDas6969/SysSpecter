@@ -61,6 +61,11 @@ class Manifest(BaseModel):
     run_id: str
     hostname: str
     fqdn: str | None = None
+    # Field-review M5: stable hardware-derived identifier so
+    # longitudinal trending survives hostname renames. Optional for
+    # back-compat with v1/v2 manifests written before this commit.
+    machine_id: str | None = None
+    machine_id_source: str | None = None
     started_at: str
     ended_at: str | None = None
     stop_reason: str | None = None

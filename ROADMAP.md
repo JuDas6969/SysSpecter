@@ -419,7 +419,11 @@ tool produced. Numbering is the ID used in the field-review document.
   shortcuts. Pydantic schema validates; v1/v2 manifests without
   `meta` still load. Runs-tab filter searches both keys + values.
 - [ ] **M3** — fleet aggregation tool downstream of capture.
-- [ ] **M5** — stable `machine_id` independent of hostname renames.
+- [x] **M5** — `manifest.machine_id` is a `MACHINE-xxxxxxxx` token
+  hashed from the SMBIOS UUID (priority 1), physical NIC MACs
+  (priority 2), or hostname (priority 3, weak fallback flagged via
+  `machine_id_source`). Survives hostname renames, supports
+  longitudinal trending across runs.
 
 ### Architecture / strategic
 
