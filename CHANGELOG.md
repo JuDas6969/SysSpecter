@@ -6,6 +6,22 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-05-09
+
+CI fix only — no functional changes from `v1.2.0`. The `v1.2.0` tag
+was created but the release workflow failed at the
+"Reproducible timestamp for PyInstaller" step (a long PowerShell
+one-liner with mismatched parentheses inside the `$(...)`
+subexpression). Tests passed, but the EXE build / smoke / asset-
+upload steps were skipped, so no `v1.2.0` Release object was ever
+published. `v1.2.1` is the first actual published release of the
+v3 production-test review work — see the `[1.2.0]` heading below
+for the full feature list.
+
+The fix replaced the PowerShell parser-killer with
+`git log -1 --format=%ct`, which returns the commit timestamp
+directly as a Unix epoch.
+
 ## [1.2.0] — 2026-05-09
 
 This release closes out the v3 production-test review (7/7 priorities
@@ -982,7 +998,8 @@ comparison tool, session splitter, and per-run HTML report.
 - Scoring heuristics are documented but not machine-learned; they are
   deliberately conservative and explainable rather than optimised.
 
-[Unreleased]: /compare/v1.2.0...HEAD
+[Unreleased]: /compare/v1.2.1...HEAD
+[1.2.1]: /releases/tag/v1.2.1
 [1.2.0]: /releases/tag/v1.2.0
 [1.1.0]: /releases/tag/v1.1.0
 [1.0.0]: /releases/tag/v1.0.0
