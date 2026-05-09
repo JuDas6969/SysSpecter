@@ -62,7 +62,12 @@ jobs:
       - name: Reproducible timestamp for PyInstaller
         shell: pwsh
         run: |
-          echo "SOURCE_DATE_EPOCH=$([int][double]::Parse((Get-Date -Date ((git log -1 --format=%cI) | Get-Date).ToUniversalTime() -UFormat %s))" >> $env:GITHUB_ENV
+          # `%ct` returns the commit timestamp directly as a Unix epoch
+          # so we don't have to parse Get-Date / UFormat (the prior
+          # one-liner had a paren mismatch that silently broke the
+          # release on v1.2.0 — tests passed, build was never reached).
+          $ts = git log -1 --format=%ct
+          "SOURCE_DATE_EPOCH=$ts" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build EXE
         shell: pwsh
