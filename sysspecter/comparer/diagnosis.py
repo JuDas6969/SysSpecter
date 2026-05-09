@@ -95,6 +95,64 @@ def _is_high_performance(plan: str | None) -> bool:
             or "ultimate performance" in p or "ultimative leistung" in p)
 
 
+def _running_process_names(run: dict[str, Any]) -> set[str]:
+    """v3-priority-3: extract the set of process names that actually
+    fired during this run (lowercased, stripped of `.exe`).
+
+    Used by the software-bloat rule to distinguish *installed* programs
+    from *running* ones — the v2 production review caught the engine
+    blaming installed-but-dormant Adobe Reader / 7-Zip / Beyond Compare
+    for an efficiency gap that was actually driven by RAM headroom and
+    active workload.
+    """
+    rd = run.get("rd")
+    if rd is None:
+        return set()
+    rows = getattr(rd, "process_rows", None) or []
+    out: set[str] = set()
+    for row in rows:
+        name = row.get("name") if isinstance(row, dict) else None
+        if not name:
+            continue
+        n = str(name).strip().lower()
+        if n.endswith(".exe"):
+            n = n[:-4]
+        out.add(n)
+    return out
+
+
+def _running_overlap(installed: list[str], running: set[str]) -> list[str]:
+    """Return installed-program names that have a matching running-
+    process name (case-insensitive, ignoring `.exe`).
+
+    Match is liberal — a process name like `Adobe.Acrobat.Reader` and
+    an installed program `Adobe Acrobat Reader` will match by token
+    overlap. This is the right side of the precision/recall tradeoff
+    here: false-negatives (missing a real match) silently lose us
+    evidence; false-positives (matching loosely) produce one fewer
+    spurious "installed but not running" claim.
+    """
+    if not installed or not running:
+        return []
+    out: list[str] = []
+    for prog in installed:
+        if not prog:
+            continue
+        prog_lower = str(prog).lower()
+        # Exact name match first
+        for tok in (prog_lower, prog_lower.replace(" ", ""), prog_lower.split()[0]):
+            if tok in running:
+                out.append(prog)
+                break
+        else:
+            # Token-overlap fallback for multi-word program names like
+            # "Microsoft Edge" matching process "msedge".
+            tokens = {t for t in prog_lower.replace("-", " ").split() if len(t) >= 4}
+            if tokens and any(rn in tokens or any(t in rn for t in tokens) for rn in running):
+                out.append(prog)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Rule engine
 # ---------------------------------------------------------------------------
@@ -148,7 +206,13 @@ def generate_hypotheses(
                 if tier_a == "HDD" and tier_b in ("SSD", "NVMe"):
                     out.append({
                         "severity": "high",
+                        # v3-priority-3: high confidence — disk-tier delta is
+                        # a strong, well-documented mechanism for IO-bound
+                        # workloads. The classifier reads media/interface
+                        # strings directly from WMI, no inference.
+                        "confidence": "high",
                         "category": "disk",
+                        "kind": "disk_tier_mechanical",
                         "run_id": a,
                         "peer_id": b,
                         "hypothesis": f"{a} is disk-bound and runs on a mechanical HDD "
@@ -173,7 +237,13 @@ def generate_hypotheses(
             if a_mem >= 80 and ram_a and ram_b and ram_a < ram_b:
                 out.append({
                     "severity": "high",
+                    # v3-priority-3: high — both sides are observed
+                    # quantities (mem_avg from samples, RAM size from WMI).
+                    # The "correlates with" wording in the hypothesis is
+                    # already conservative.
+                    "confidence": "high",
                     "category": "memory",
+                    "kind": "memory_pressure_smaller_ram",
                     "run_id": a,
                     "peer_id": b,
                     "hypothesis": f"Memory pressure on {a} correlates with smaller RAM than {b}.",
@@ -192,7 +262,12 @@ def generate_hypotheses(
             if ra.get("primary") == "cpu" and cpu_a_mhz and cpu_b_mhz and cpu_b_mhz - cpu_a_mhz >= 400:
                 out.append({
                     "severity": "medium",
+                    # v3-priority-3: medium — clock-speed delta is real but
+                    # IPC differences and core-count effects can dominate
+                    # the actual CPU performance gap.
+                    "confidence": "medium",
                     "category": "cpu",
+                    "kind": "cpu_lower_clock",
                     "run_id": a,
                     "peer_id": b,
                     "hypothesis": f"{a} is CPU-bound and has a lower-clocked CPU than {b}.",
@@ -212,7 +287,12 @@ def generate_hypotheses(
                     and _is_high_performance(cb.get("power_plan")):
                 out.append({
                     "severity": "medium",
+                    # v3-priority-3: medium — power-plan does affect P-state
+                    # selection but the actual CPU gap depends on workload
+                    # type (CPU-bound benefits more than IO-bound).
+                    "confidence": "medium",
                     "category": "power",
+                    "kind": "non_high_performance_plan",
                     "run_id": a,
                     "peer_id": b,
                     "hypothesis": f"{a} is CPU-bound but does not use a High-Performance power plan.",
@@ -235,7 +315,13 @@ def generate_hypotheses(
             if sec_a is not None and sec_b is not None and sec_b - sec_a >= 10 and av_a > av_b:
                 out.append({
                     "severity": "medium",
+                    # v3-priority-3: medium — multiple AV products is a
+                    # well-known mechanism for security-overhead spikes,
+                    # but we don't observe per-product CPU here so we
+                    # can't be high-confidence about which one dominates.
+                    "confidence": "medium",
                     "category": "security",
+                    "kind": "multiple_av_products",
                     "run_id": a,
                     "peer_id": b,
                     "hypothesis": f"{a} carries more AV products than {b}, which may overlap.",
@@ -250,6 +336,19 @@ def generate_hypotheses(
                 })
 
     # --- Software bloat rule per pair (un-ordered; software diff is symmetric)
+    # v3-priority-3: tighten causal claims. The v2 production review caught
+    # this rule attributing a 20-point efficiency gap to "106 unused
+    # software programs" — most of which were installed-but-not-running
+    # (Adobe Reader, 7-Zip, Beyond Compare). The fix: split installed
+    # entries into actually-running vs installed-only, and:
+    #   - fire a "medium" confidence finding only when the unique-to-A
+    #     set has actually-running entries (real causal mechanism).
+    #   - fire a "low" confidence candidate-factor finding when the diff
+    #     is installed-only (correlation but no observed mechanism).
+    # This keeps the engine helpful without overstating evidence.
+    running_by_id: dict[str, set[str]] = {
+        rid: _running_process_names(r) for rid, r in runs_by_id.items()
+    }
     for pair_diff in (sw_diff.get("pairwise") or []):
         a, b = pair_diff["pair"]
         ra, rb = rows.get(a) or {}, rows.get(b) or {}
@@ -257,42 +356,83 @@ def generate_hypotheses(
         eff_b = _score(rb, "efficiency")
         if eff_a is None or eff_b is None:
             continue
-        if pair_diff.get("only_in_a_total", 0) >= 10 and eff_b - eff_a >= 5:
-            sample = [p for p in pair_diff.get("only_in_a") or []][:10]
-            out.append({
-                "severity": "medium",
-                "category": "software",
-                "run_id": a,
-                "peer_id": b,
-                "hypothesis": f"{a} carries {pair_diff['only_in_a_total']} programs that "
-                              f"{b} does not — likely background noise.",
-                "evidence": [
-                    f"efficiency score: {a}={eff_a:.0f} vs {b}={eff_b:.0f}",
-                    f"unique-to-{a} sample: {', '.join(sample) or '—'}",
-                ],
-                "recommendation": (
-                    f"Review installed programs on {a}; uninstall unused entries first. "
-                    f"Candidates: {', '.join(sample) or '—'}."
-                ),
-            })
-        if pair_diff.get("only_in_b_total", 0) >= 10 and eff_a - eff_b >= 5:
-            sample = [p for p in pair_diff.get("only_in_b") or []][:10]
-            out.append({
-                "severity": "medium",
-                "category": "software",
-                "run_id": b,
-                "peer_id": a,
-                "hypothesis": f"{b} carries {pair_diff['only_in_b_total']} programs that "
-                              f"{a} does not — likely background noise.",
-                "evidence": [
-                    f"efficiency score: {b}={eff_b:.0f} vs {a}={eff_a:.0f}",
-                    f"unique-to-{b} sample: {', '.join(sample) or '—'}",
-                ],
-                "recommendation": (
-                    f"Review installed programs on {b}; uninstall unused entries first. "
-                    f"Candidates: {', '.join(sample) or '—'}."
-                ),
-            })
+        for src, dst, only_total_key, only_list_key in (
+            (a, b, "only_in_a_total", "only_in_a"),
+            (b, a, "only_in_b_total", "only_in_b"),
+        ):
+            if pair_diff.get(only_total_key, 0) < 10:
+                continue
+            eff_src = eff_a if src == a else eff_b
+            eff_dst = eff_b if src == a else eff_a
+            if eff_dst - eff_src < 5:
+                continue
+            installed_only_in_src = list(pair_diff.get(only_list_key) or [])
+            running_overlap = _running_overlap(
+                installed_only_in_src, running_by_id.get(src, set())
+            )
+            installed_count = pair_diff.get(only_total_key, 0)
+            running_count = len(running_overlap)
+            sample_running = running_overlap[:10]
+            sample_installed = installed_only_in_src[:10]
+            if running_count >= 1:
+                # Real causal signal — at least one of the unique-to-src
+                # programs was actively running and may have contributed
+                # to the efficiency gap.
+                out.append({
+                    "severity": "medium",
+                    "confidence": "medium",
+                    "category": "software",
+                    "kind": "running_software_delta",
+                    "run_id": src,
+                    "peer_id": dst,
+                    "hypothesis": (
+                        f"{src} ran {running_count} program(s) that "
+                        f"{dst} did not — these may contribute to the "
+                        f"efficiency gap (Δ {eff_dst - eff_src:.0f} pts)."
+                    ),
+                    "evidence": [
+                        f"efficiency score: {src}={eff_src:.0f} vs {dst}={eff_dst:.0f}",
+                        f"running-only-on-{src} sample: "
+                        f"{', '.join(sample_running) or '—'}",
+                        f"installed-only-on-{src} (broader set, "
+                        f"{installed_count} entries): "
+                        f"{', '.join(sample_installed) or '—'}",
+                    ],
+                    "recommendation": (
+                        f"Investigate the actually-running programs first: "
+                        f"{', '.join(sample_running)}. Installed-but-dormant "
+                        f"entries don't consume resources unless launched."
+                    ),
+                })
+            else:
+                # No actually-running evidence — surface as a low-confidence
+                # candidate factor rather than a confident cause.
+                out.append({
+                    "severity": "low",
+                    "confidence": "low",
+                    "category": "software",
+                    "kind": "installed_software_delta_candidate",
+                    "run_id": src,
+                    "peer_id": dst,
+                    "hypothesis": (
+                        f"Candidate factor (low confidence): {src} carries "
+                        f"{installed_count} installed programs that {dst} "
+                        f"does not, but none were observed running during "
+                        f"this capture. Direct causal claim is not supported."
+                    ),
+                    "evidence": [
+                        f"efficiency score: {src}={eff_src:.0f} vs {dst}={eff_dst:.0f}",
+                        f"installed-only-on-{src} sample: "
+                        f"{', '.join(sample_installed) or '—'}",
+                        "running-process overlap with installed-only set: 0",
+                    ],
+                    "recommendation": (
+                        "Treat this as one of several plausible factors — RAM, "
+                        "core count, and active workload typically dominate. "
+                        "Re-capture with the suspected programs running to "
+                        "test directly."
+                    ),
+                })
 
     return out
 
@@ -322,6 +462,10 @@ def generate_recommendations(hypotheses: list[dict[str, Any]]) -> list[dict[str,
                 "run_id": h.get("run_id"),
                 "category": h.get("category"),
                 "severity": h.get("severity"),
+                # v3-priority-3: carry confidence through so the
+                # "Recommendations" section in the report can show
+                # readers how strongly each one is grounded.
+                "confidence": h.get("confidence") or "medium",
                 "recommendation": h.get("recommendation"),
                 "based_on": h.get("hypothesis"),
                 "evidence": h.get("evidence") or [],

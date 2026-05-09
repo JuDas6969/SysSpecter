@@ -101,6 +101,50 @@ _TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8">
 </div>
 {% endif %}
 
+{# v3-priority-3: peer-context banner. Same shape as the cadence
+   banner — surfaced near the top so the reader sees "these aren't
+   apples-to-apples" before forming an opinion from the verdicts. #}
+{% if peer_warnings %}
+<div class="cadence-banner medium">
+  <h3>Peer context &mdash; non-peer comparison</h3>
+  <p style="margin:4px 0 8px 0">
+    The runs being compared have different declared <code>machine_class</code>
+    values, putting them in different workload-profile peer groups.
+    Direct comparison of idle CPU, memory pressure, or latency may
+    overstate real differences.
+  </p>
+  <ul>
+    {% for w in peer_warnings %}
+    <li><b>[{{ w.severity }}]</b> {{ w.hypothesis }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if peer_classes %}
+<h2>Per-run machine class</h2>
+<div class="card">
+  <table><thead><tr>
+    <th>run</th><th>declared</th><th>normalised</th><th>peer group</th>
+  </tr></thead><tbody>
+  {% for p in peer_classes %}
+  <tr>
+    <td><code>{{ p.run_id }}</code></td>
+    <td>{{ p.machine_class or '—' }}</td>
+    <td>{{ p.machine_class_normalised or '—' }}</td>
+    <td>{{ p.peer_group or '—' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+  <p class="small" style="margin-top:8px">
+    <i>Peer groups: <b>workstation</b> (developer / engineering),
+    <b>office</b> (general-knowledge-worker), <b>embedded</b>
+    (kiosk / factory-floor), <b>terminal-server</b>. Set with
+    <code>--machine-class &lt;name&gt;</code> on capture.</i>
+  </p>
+</div>
+{% endif %}
+
 <h2>Per-run cadence</h2>
 <div class="card">
   <table><thead><tr>
@@ -154,6 +198,7 @@ _TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8">
   {% for r in recommendations %}
   <div class="rec {{ r.severity }}">
     <span class="sev">{{ r.severity }}</span>
+    <span class="cadence-pill {% if r.confidence == 'high' %}good{% elif r.confidence == 'medium' %}degraded{% else %}unknown{% endif %}">conf: {{ r.confidence or 'medium' }}</span>
     <b>{{ r.run_id }}</b> — {{ r.category }}: {{ r.recommendation }}
     <div class="small" style="margin-top:4px;"><i>{{ r.based_on }}</i></div>
     {% if r.evidence %}
@@ -170,14 +215,16 @@ _TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8">
 <div class="card">
 {% if hypotheses %}
   <table><thead><tr>
-    <th>run</th><th>vs peer</th><th>category</th><th>severity</th><th>hypothesis</th>
+    <th>run</th><th>vs peer</th><th>category</th><th>severity</th>
+    <th>confidence</th><th>hypothesis</th>
   </tr></thead><tbody>
   {% for h in hypotheses %}
   <tr>
     <td><code>{{ h.run_id }}</code></td>
-    <td><code>{{ h.peer_id }}</code></td>
+    <td><code>{{ h.peer_id or '—' }}</code></td>
     <td>{{ h.category }}</td>
     <td>{{ h.severity }}</td>
+    <td><span class="cadence-pill {% if h.confidence == 'high' %}good{% elif h.confidence == 'medium' %}degraded{% else %}unknown{% endif %}">{{ h.confidence or 'medium' }}</span></td>
     <td>{{ h.hypothesis }}
       {% if h.evidence %}<details><summary>evidence</summary>
       <ul class="small">{% for e in h.evidence %}<li>{{ e }}</li>{% endfor %}</ul></details>{% endif %}
@@ -185,6 +232,12 @@ _TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8">
   </tr>
   {% endfor %}
   </tbody></table>
+  <p class="small" style="margin-top:8px"><i>
+    Confidence: <b>high</b> = direct mechanism observed (disk tier, RAM
+    delta with observed memory pressure, declared machine_class
+    mismatch); <b>medium</b> = plausible mechanism with partial
+    evidence; <b>low</b> = candidate factor, correlation only.
+  </i></p>
 {% else %}
 <p class="small">No hypotheses triggered by the current rule set.</p>
 {% endif %}
@@ -505,9 +558,13 @@ def _build_markdown(
     *,
     cadence_per_run: list[dict[str, Any]] | None = None,
     cadence_warnings: list[dict[str, Any]] | None = None,
+    peer_classes: list[dict[str, Any]] | None = None,
+    peer_warnings: list[dict[str, Any]] | None = None,
 ) -> str:
     cadence_per_run = cadence_per_run or []
     cadence_warnings = cadence_warnings or []
+    peer_classes = peer_classes or []
+    peer_warnings = peer_warnings or []
 
     lines = [f"# SysSpecter comparison — {comparison_id}", "_See everything. Find the cause._", ""]
     lines.append(f"**Analysis mode:** {mode_lbl} _(auto-detected from hostnames)_")
@@ -543,6 +600,34 @@ def _build_markdown(
                      "Cross-run metrics are directly comparable.")
         lines.append("")
 
+    # v3-priority-3: peer-context section, parallel to cadence_quality.
+    if peer_warnings:
+        lines.append("## Peer context — non-peer comparison")
+        lines.append("")
+        lines.append(
+            "The runs being compared have different declared "
+            "`machine_class` values (different workload-profile peer "
+            "groups). Direct comparison of idle CPU, memory pressure, "
+            "or latency may overstate real differences."
+        )
+        lines.append("")
+        for w in peer_warnings:
+            lines.append(f"- **[{w.get('severity')}]** {w.get('hypothesis')}")
+        lines.append("")
+
+    if peer_classes:
+        lines.append("### Per-run machine class")
+        lines.append("| run | declared | normalised | peer group |")
+        lines.append("|---|---|---|---|")
+        for p in peer_classes:
+            lines.append(
+                f"| `{p.get('run_id')}` "
+                f"| {p.get('machine_class') or '—'} "
+                f"| {p.get('machine_class_normalised') or '—'} "
+                f"| {p.get('peer_group') or '—'} |"
+            )
+        lines.append("")
+
     if cadence_per_run:
         lines.append("### Per-run cadence")
         lines.append("| run | health | nominal | median gap | p95 gap | max gap | samples | priority |")
@@ -568,17 +653,32 @@ def _build_markdown(
     if recommendations:
         lines.append("## Recommendations")
         for r in recommendations:
-            lines.append(f"- **[{r.get('severity')}]** `{r.get('run_id')}` — "
-                         f"{r.get('category')}: {r.get('recommendation')}")
+            conf = r.get("confidence") or "medium"
+            lines.append(
+                f"- **[sev={r.get('severity')}, conf={conf}]** "
+                f"`{r.get('run_id')}` — {r.get('category')}: "
+                f"{r.get('recommendation')}"
+            )
             if r.get("based_on"):
                 lines.append(f"    - _based on:_ {r['based_on']}")
         lines.append("")
 
     if hypotheses:
         lines.append("## Root-cause hypotheses")
+        lines.append("")
+        lines.append(
+            "_Confidence: **high** = direct mechanism observed; "
+            "**medium** = plausible mechanism with partial evidence; "
+            "**low** = candidate factor, correlation only._"
+        )
+        lines.append("")
         for h in hypotheses:
-            lines.append(f"- **[{h.get('severity')}]** `{h.get('run_id')}` vs `{h.get('peer_id')}` "
-                         f"({h.get('category')}): {h.get('hypothesis')}")
+            conf = h.get("confidence") or "medium"
+            lines.append(
+                f"- **[sev={h.get('severity')}, conf={conf}]** "
+                f"`{h.get('run_id')}` vs `{h.get('peer_id') or '—'}` "
+                f"({h.get('category')}): {h.get('hypothesis')}"
+            )
             for e in (h.get("evidence") or []):
                 lines.append(f"    - {e}")
         lines.append("")
@@ -672,6 +772,8 @@ def build_comparison_report(
     cadence_per_run: list[dict[str, Any]] | None = None,
     cadence_warnings: list[dict[str, Any]] | None = None,
     rankings_with_confidence: dict[str, Any] | None = None,
+    peer_classes: list[dict[str, Any]] | None = None,
+    peer_warnings: list[dict[str, Any]] | None = None,
 ) -> None:
     env = Environment(loader=BaseLoader(), autoescape=select_autoescape())
     tpl = env.from_string(_TEMPLATE)
@@ -689,6 +791,8 @@ def build_comparison_report(
     cadence_per_run = cadence_per_run or []
     cadence_warnings = cadence_warnings or []
     rankings_with_confidence = rankings_with_confidence or {}
+    peer_classes = peer_classes or []
+    peer_warnings = peer_warnings or []
 
     from .mode import mode_label
     mode_lbl = mode_label(mode)  # type: ignore[arg-type]
@@ -727,6 +831,8 @@ def build_comparison_report(
         cadence_per_run=cadence_per_run,
         cadence_warnings=cadence_warnings,
         rankings_with_confidence=rankings_with_confidence,
+        peer_classes=peer_classes,
+        peer_warnings=peer_warnings,
     )
     tmp = paths.html + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -738,6 +844,8 @@ def build_comparison_report(
         mode_lbl, hw_diff, cfg_diff, hypotheses, recommendations,
         cadence_per_run=cadence_per_run,
         cadence_warnings=cadence_warnings,
+        peer_classes=peer_classes,
+        peer_warnings=peer_warnings,
     )
     with open(paths.md, "w", encoding="utf-8") as f:
         f.write(md)

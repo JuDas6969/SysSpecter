@@ -6,6 +6,78 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (v3-priority-3: tighter root-cause claims)
+
+The v2 production review caught the engine making a confident causal
+claim that didn't hold up: it attributed the 20-point efficiency gap
+between ATLT4407 and MORGANA to "106 unused software programs."
+Most of those programs (Adobe Reader, 7-Zip, Beyond Compare,
+BeyondTrust, Check Point) were *installed* but not *running*; the
+real gap was driven by RAM (16 vs 64 GB), cores (4 vs 16), and
+active workload (Claude Code on ATLT4407 vs idle MORGANA).
+
+Three concrete tightenings:
+
+- **New `comparer/peer_context.py` module.** Lifts each run's
+  `manifest.meta.machine_class` (per C3) into a peer-group taxonomy
+  (`workstation` / `office` / `embedded` / `terminal-server`).
+  When two runs are in different peer groups, emits a medium-
+  severity `machine_class_mismatch` finding with high confidence
+  (rule-based on declared metadata) so the report can flag
+  non-peer comparisons before the verdicts. A low-severity
+  completeness note suggests `--machine-class` for legacy runs.
+
+- **Software-bloat rule split** into two paths in `diagnosis.py`:
+  - `running_software_delta` (medium severity, medium confidence) —
+    fires when at least one of the unique-to-A programs has a
+    matching running process. Real causal mechanism. Wording uses
+    "may contribute to" not "explains."
+  - `installed_software_delta_candidate` (low severity, low
+    confidence) — fires when the diff is installed-only with no
+    running evidence. Surfaced as a candidate factor with explicit
+    "Treat this as one of several plausible factors — RAM, core
+    count, and active workload typically dominate" guidance.
+  Per-pair de-duplication: only one of the two fires per pair.
+  Helpers: `_running_process_names(run)` extracts lowercased,
+  `.exe`-stripped process names from `rd.process_rows`;
+  `_running_overlap(installed, running)` matches installed program
+  strings to running process names with token-overlap fallback for
+  multi-word names like "Microsoft Edge" matching `msedge`.
+
+- **`confidence` field added to all diagnosis rules** (`high` /
+  `medium` / `low`):
+  - `disk_tier_mechanical` → high (direct mechanism, WMI-classified)
+  - `memory_pressure_smaller_ram` → high (both sides observed)
+  - `cpu_lower_clock` → medium (IPC + core count can dominate)
+  - `non_high_performance_plan` → medium (workload-type-dependent)
+  - `multiple_av_products` → medium (no per-product CPU breakdown)
+  - `machine_class_mismatch` → high (rule-based on declared metadata)
+  Each finding now also carries a stable `kind` field for
+  downstream reasoning. `generate_recommendations` propagates
+  `confidence` through to the report.
+
+- **`comparison_findings.json` gains** `peer_classes` and
+  `peer_mismatch_warnings`. Peer findings are prepended to
+  `root_causes` after the cadence findings — order: cadence (data
+  trust), peers (comparison fairness), then the rest.
+
+- **HTML + Markdown reports** gain a "Peer context" section
+  parallel to "Cadence quality" — banner when non-peers, per-run
+  machine_class table. The hypotheses table gains a "confidence"
+  column with colour-coded pills (good / degraded / unknown =
+  high / medium / low). Recommendations show severity AND
+  confidence side by side.
+
+- 24 new unit tests pinning: `_running_process_names` /
+  `_running_overlap` helpers; the running-vs-installed split (good
+  case fires medium-confidence, no-running case fires
+  low-confidence, never both); peer-context normalisation +
+  alias handling; the ATLT4407↔MORGANA case (general-knowledge-worker
+  vs developer-workstation → mismatch); legacy back-compat
+  (undeclared machine_class doesn't trigger findings on its own).
+
+405 unit tests pass (was 381), ruff clean, bandit clean.
+
 ### Added (v3-priority-2: comparison-engine cadence-quality awareness)
 
 The v2 production review found the engine's biggest practical bug:

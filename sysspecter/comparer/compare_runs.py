@@ -20,6 +20,7 @@ from .diagnosis import bottleneck_comparison, generate_hypotheses, generate_reco
 from .loader import load_run_full
 from .matrix import build_matrix, write_matrix_csv
 from .mode import detect_mode, mode_label
+from .peer_context import build_peer_mismatch_findings, extract_machine_classes
 from .static_diff import diff_autoruns, diff_config, diff_hardware, diff_software
 
 
@@ -133,6 +134,17 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         logger.warning("cadence-quality finding: [%s] %s",
                        worst.get("kind"), worst.get("hypothesis"))
 
+    # v3-priority-3: peer-context awareness. When two runs declare
+    # different machine_class (e.g. enterprise-managed-laptop vs
+    # personal-desktop), surface that as a top-of-report caveat so
+    # the engine isn't comparing non-peers without acknowledgement.
+    peer_classes = extract_machine_classes(loaded)
+    peer_warnings = build_peer_mismatch_findings(loaded)
+    if peer_warnings:
+        first = peer_warnings[0]
+        logger.warning("peer-context finding: [%s] %s",
+                       first.get("kind"), first.get("hypothesis"))
+
     differences = _explain_differences(loaded, matrix)
     problems = _unique_and_common_problems(loaded)
 
@@ -142,10 +154,13 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
     cfg_diff = diff_config(loaded)
     bottlenecks = bottleneck_comparison(matrix)
     hypotheses = generate_hypotheses(loaded, matrix, hw_diff, sw_diff, cfg_diff)
-    # Cadence-quality findings rank with the other root-cause hypotheses.
-    # They go FIRST because if cadence is broken, every other hypothesis
-    # downstream is built on shaky data.
-    hypotheses = list(cadence_warnings) + list(hypotheses)
+    # Cadence-quality findings + peer-context findings rank ahead of
+    # everything else: if cadence is broken or peers don't match,
+    # downstream hypotheses are built on shaky comparisons. Cadence is
+    # listed FIRST because it gates whether the data itself is trustworthy;
+    # peer-context comes second because it gates whether the comparison
+    # is fair.
+    hypotheses = list(cadence_warnings) + list(peer_warnings) + list(hypotheses)
     recommendations = generate_recommendations(hypotheses)
 
     # Field-review A5: lift the new schema fields (M5 machine_id,
@@ -186,6 +201,13 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         "cadence_quality_per_run": cadence_per_run,
         "cadence_quality_warnings": cadence_warnings,
         "rankings_with_confidence": cadence_rankings,
+        # v3-priority-3: peer-context blocks. `peer_classes` is the
+        # per-run machine_class lift; `peer_mismatch_warnings` are the
+        # non-peer findings. Together they let consumers know when a
+        # comparison is between machines with different workload
+        # profiles (and thus when cross-run claims need a caveat).
+        "peer_classes": peer_classes,
+        "peer_mismatch_warnings": peer_warnings,
         "pairwise_observations": differences,
         "common_and_unique_problems": problems,
         "static_diff": {
@@ -244,6 +266,8 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         cadence_per_run=cadence_per_run,
         cadence_warnings=cadence_warnings,
         rankings_with_confidence=cadence_rankings,
+        peer_classes=peer_classes,
+        peer_warnings=peer_warnings,
     )
     logger.info("comparison complete: %s", paths.comparison_dir)
     return paths.comparison_dir
