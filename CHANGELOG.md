@@ -6,6 +6,50 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-05-09
+
+This release closes out the v3 production-test review (7/7 priorities
+shipped). Per-PID handle-type breakdown, .NET CLR managed-heap
+counters with native-vs-managed leak attribution, cap-window-aware
+comparison scoring, same-host pattern detection (run-cluster,
+regime-change, deterministic-deadlock signatures), cadence-quality
+visibility (manifest block + CSV columns + `HIGH_PRIORITY_CLASS`),
+peer-context awareness (machine-class mismatch warnings), and
+running-vs-installed software-bloat distinction with confidence
+scoring on every diagnosis hypothesis.
+
+**Headlines:**
+
+- **Per-PID handle counts by object type** (priority 4 / H1) — new
+  `timeline_handles.csv` via `NtQuerySystemInformation`. RCW signature
+  detection (Section + Event handles climbing together = textbook
+  COM Runtime-Callable-Wrapper leak).
+- **.NET CLR managed-heap counters** (priority 5 / H2) — new
+  `timeline_managed_heap.csv` via PDH. Gen-2 leak detection +
+  **native-vs-managed attribution** ("RSS grew but managed heap was
+  flat → look in unmanaged code").
+- **Cadence visibility + sampler priority** (priority 1 / S1+S3) —
+  `manifest.cadence_quality` block, `sample_late_ms` + `gap_seconds`
+  in `timeline_system.csv`, runner self-elevates to
+  `HIGH_PRIORITY_CLASS`.
+- **Comparison engine guards** (priorities 2, 3, 6, 7):
+  - Cadence-quality awareness — refuses to compare metrics across
+    runs with mismatched cadence.
+  - Peer-context awareness — flags `machine_class` mismatches before
+    the verdicts.
+  - Cap-window-aware scoring — headline verdicts use `last_1h` /
+    `last_8h` tail windows when all runs are long enough; falls
+    back with an explicit length-bias caveat otherwise.
+  - Seven same-host pattern rules (run-cluster, regime-change,
+    deterministic-deadlock, cross-run invariants, top-N consistency,
+    exclusion gates).
+- **Tighter root-cause claims** (priority 3) — software-bloat rule
+  splits installed-vs-running, every hypothesis now carries a
+  `confidence` field (high / medium / low), CI fix for ruff E402.
+
+**495 unit tests pass, ruff clean, bandit clean.** Single-file
+portable Windows EXE at `dist\SysSpecter.exe`.
+
 ### Added (v3-priority-7: same-host comparison rules)
 
 The v2 production review's most damning finding: the engine fired
@@ -938,6 +982,7 @@ comparison tool, session splitter, and per-run HTML report.
 - Scoring heuristics are documented but not machine-learned; they are
   deliberately conservative and explainable rather than optimised.
 
-[Unreleased]: /compare/v1.1.0...HEAD
+[Unreleased]: /compare/v1.2.0...HEAD
+[1.2.0]: /releases/tag/v1.2.0
 [1.1.0]: /releases/tag/v1.1.0
 [1.0.0]: /releases/tag/v1.0.0
