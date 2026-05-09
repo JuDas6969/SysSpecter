@@ -50,14 +50,14 @@ from ctypes import (
     cast,
     sizeof,
 )
+from dataclasses import dataclass
 
 # UCHAR / USHORT / ULONG aren't reliably exported from ctypes.wintypes
-# across Python versions (UCHAR is missing on 3.14). Use the c_ types
+# across Python versions (missing on 3.12 / 3.14). Use the c_ aliases
 # directly so we work on every supported runtime.
 UCHAR = c_uint8
 USHORT = c_uint16
 ULONG = c_uint32
-from dataclasses import dataclass
 
 # NTSTATUS codes we care about.
 _STATUS_SUCCESS = 0x00000000
