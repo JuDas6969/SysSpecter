@@ -116,6 +116,70 @@ def aligned_score_for_run_id(
     return None
 
 
+# Window-label → seconds mapping (mirrors analyzer/scores._TAIL_WINDOWS_S).
+_WINDOW_SECONDS: dict[str, float] = {
+    "last_1h": 3600.0,
+    "last_8h": 28800.0,
+}
+
+
+def _compute_window_score_from_raw(
+    r: dict[str, Any], window_label: str,
+) -> dict[str, Any] | None:
+    """v1.3.0 B.3: when a run's `scores.tail_windows` doesn't include
+    the requested window, re-compute it from the raw timeline +
+    findings. Returns the same shape as a pre-computed tail-window
+    block (so the caller treats both paths identically), or None when
+    the run doesn't have enough data.
+
+    Re-uses `analyzer/scores.compute_tail_window_scores` so the
+    formulas are byte-identical to the per-run path. No duplicated
+    score logic.
+    """
+    rd = r.get("rd")
+    findings = r.get("findings") or {}
+    manifest = r.get("manifest") or {}
+    if rd is None:
+        return None
+    system_rows = getattr(rd, "system_rows", None) or []
+    latency_rows = getattr(rd, "latency_rows", None) or []
+    if not system_rows:
+        return None
+    duration = manifest.get("duration_actual_seconds") or 0.0
+    try:
+        duration = float(duration)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration <= 0:
+        # Try to derive from the timeline directly.
+        try:
+            duration = float(system_rows[-1].get("rel_seconds") or 0.0)
+        except (TypeError, ValueError):
+            duration = 0.0
+    if duration < _WINDOW_SECONDS.get(window_label, 1e9):
+        return None
+    try:
+        from ..analyzer.scores import compute_tail_window_scores
+    except ImportError:
+        return None
+    blocks = compute_tail_window_scores(
+        system_rows,
+        findings.get("anomalies") or [],
+        findings.get("slowdowns") or [],
+        findings.get("offenders") or {},
+        findings.get("leaks") or {},
+        latency_rows,
+        manifest.get("mode") or "support",
+        findings.get("bottlenecks") or {},
+        full_window_start=0.0,
+        full_window_end=duration,
+    )
+    for block in blocks:
+        if block.get("window_label") == window_label:
+            return block
+    return None
+
+
 def build_aligned_view(
     loaded: list[dict[str, Any]],
     window_label: str | None,
@@ -137,18 +201,24 @@ def build_aligned_view(
                     "network": float | None,
                     "hygiene": float | None,
                     "samples_in_window": int | None,
-                    "alignment_status": "aligned" | "too_short" | "no_data",
+                    "alignment_status": "aligned" | "too_short"
+                                      | "empty" | "no_data",
                 },
                 ...
             ],
         }
 
-    `alignment_status` is per-run: `aligned` when the run produced a
-    matching tail-window block, `too_short` when the run is below
-    the requested window length, `no_data` when the run pre-dates
-    A6 entirely. With a `None` window the rows are still emitted
-    with empty score fields so the report can render a "no common
-    window" panel.
+    `alignment_status` is per-run:
+      - `aligned`    — block found (pre-computed in scores.json OR
+                        freshly computed from rd timeline in v1.3.0
+                        B.3 fallback).
+      - `too_short`  — duration < requested window.
+      - `empty`      — 0 samples (run captured nothing).
+      - `no_data`    — pre-v1.0 run with no usable timeline / no
+                        scores data at all.
+
+    With a `None` window the rows are still emitted with empty score
+    fields so the report can render a "no common window" panel.
     """
     rows: list[dict[str, Any]] = []
     duration: float | None = None
@@ -178,10 +248,44 @@ def build_aligned_view(
             None,
         )
         if block is None:
-            # Distinguish "too short" from "no_data". `tail_windows`
-            # absent entirely means pre-A6; present but missing this
-            # label means the run is too short to fit the window.
-            status = "too_short" if _tail_blocks(s) else "no_data"
+            # v1.3.0 B.3: try the fresh-compute fallback before
+            # giving up. This covers runs captured before A6 shipped
+            # (tail_windows absent) and runs where the analyzer
+            # didn't emit the block (rare).
+            block = _compute_window_score_from_raw(r, window_label)
+        if block is None:
+            # Distinguish the failure modes so the report can be
+            # honest about WHY a row is empty.
+            #   `empty`     — rd present, 0 system rows captured.
+            #   `too_short` — has SOME pre-computed tail-window block
+            #                  but not this label; OR duration < window.
+            #   `no_data`   — pre-A6 / pre-v1.3 run with no tail_windows
+            #                  AND no usable timeline (rd absent).
+            rd = r.get("rd")
+            window_len = _WINDOW_SECONDS.get(window_label, 0)
+            try:
+                actual_f = float(actual)
+            except (TypeError, ValueError):
+                actual_f = 0.0
+            samples = (
+                len(getattr(rd, "system_rows", None) or [])
+                if rd is not None else 0
+            )
+            has_some_tail_windows = bool(_tail_blocks(s))
+
+            if rd is not None and samples == 0:
+                status = "empty"
+            elif rd is None and not has_some_tail_windows:
+                # No timeline AND no tail_windows = pre-A6 legacy run.
+                status = "no_data"
+            elif has_some_tail_windows:
+                # Has tail_windows but not THIS one → too_short
+                # (e.g. has last_1h, was asked for last_8h).
+                status = "too_short"
+            elif actual_f > 0 and actual_f < window_len:
+                status = "too_short"
+            else:
+                status = "no_data"
             rows.append({
                 "run_id": run_id,
                 "hostname": hostname,

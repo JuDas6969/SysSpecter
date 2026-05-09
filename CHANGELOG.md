@@ -6,6 +6,102 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-05-09
+
+Closes the v1.2 production-test review (self-leak + 8 quality bugs +
+regression suite) per the v1.3.0 implementation plan. **No new data
+captures** in this release — the focus is making the v1.2 features
+trustworthy on real production data. New data captures
+(cross-run leak signature, JVM / Python managed heap, stack-aware
+heuristic, RAPL thermal) are queued for v1.4 in `ROADMAP.md`.
+
+### Phase A — self-leak fix
+
+- **`--profile-leak` CLI flag** (Phase A.0) takes a `tracemalloc`
+  snapshot every 60 s, writes a top-30 growing-source-locations report
+  to `leak_profile.txt` at run end. Used to confirm the actual leak
+  source instead of guessing.
+- **Streaming JSONL events** (Phase A.1, Suspect 1) — `process_events`
+  and `service_events` are now appended to `*.jsonl.partial` files as
+  they arrive instead of accumulating in unbounded in-memory lists.
+  At run end, atomic-rewrite to `process_events.json` /
+  `service_events.json` (single JSON array, back-compat for existing
+  `analyzer/loader.py` consumers).
+- **Streaming gap statistics** (Phase A.1, Suspect 1) — replaces the
+  `observed_gaps: list[float]` accumulator with a reservoir-sampling
+  + running-counter `StreamingGapStats` class. Memory is O(1) in run
+  length; the resulting `cadence_quality` block is byte-identical to
+  the v1.2 list-based path.
+- **`process_sampler` cache pruning** (Phase A.1, Suspect 3) —
+  `_last_io` and `_last_cpu_time` are now pruned alongside
+  `_proc_cache` on every `refresh_candidates()` call, bounding their
+  size to the candidate set instead of letting stale PIDs accumulate.
+
+### Phase B — eight quality bugs
+
+- **B.1 deterministic_deadlock detector tightened** — full sequence
+  required (180 s growth phase with R² ≥ 0.85 + 120 s plateau + 300 s
+  CPU < 1 % + Pearson correlation ≥ 0.7 between RSS and handles
+  during growth). Default-excludes svchost / Discord /
+  msedgewebview2 / etc. Counting fix: dedup by `run_id` so "12 of 6
+  runs" can never appear. Severity calibrated: ≥ 50 % share → high,
+  ≥ 2 runs → medium.
+- **B.2 peer_classes static-snapshot classifier** —
+  `classify_from_static_snapshot` derives `machine_class` from
+  Manufacturer / Model / FQDN / installed-programs (EDR / VPN
+  markers) / Windows OS caption when `--machine-class` was not
+  passed. New `peer_group_detailed` field exposes the rich
+  `class:ram_class:cpu_thread_class` form for the analyst; the
+  bucket-form `peer_group` keeps mismatch detection sensible.
+  `machine_class_source` field tells consumers whether the value
+  came from explicit user input or classifier inference.
+- **B.3 `window_aligned_view` fresh-compute fallback** — when a run
+  doesn't carry a pre-computed `tail_windows` block, the comparer
+  re-invokes `analyzer/scores.compute_tail_window_scores` on the
+  raw `rd.system_rows` to produce the windowed scores. Status
+  taxonomy now: `aligned` / `too_short` / `empty` / `no_data`.
+- **B.4 `primary_disk_tier` Storage-namespace ground truth** —
+  static collector now also queries `Get-PhysicalDisk` for the
+  modern `MediaType` (SSD / HDD / Unspecified) and `BusType` (NVMe /
+  SATA / …). The classifier prefers these over the legacy
+  `Win32_DiskDrive` model heuristics. Tier values are lowercase
+  (`nvme` / `ssd` / `hdd` / `unknown`); never silently defaults to
+  `hdd`.
+- **B.5 manifest cadence-truth (schema_version 3)** — top-level
+  `interval_seconds` now reflects the OBSERVED median gap after
+  finalisation, not the declared target. New sibling fields:
+  `interval_seconds_target` (immutable record), `interval_seconds_observed_median`,
+  `interval_seconds_observed_p95`, `samples_emitted`,
+  `samples_target_estimate`. Schema bump from 2 → 3.
+- **B.6 recommendation second-pass dedup** — `generate_recommendations`
+  gains a `(category, recommendation_text)` merge pass that
+  collapses identical recommendations across runs into a single
+  entry with a `targets` list. Severity promoted to the highest
+  seen across the merge group; evidence aggregated.
+- **B.7 `comparison_manifest.input_runs` portability** — list of
+  `{run_id, captured_path}` dicts instead of raw dev-time path
+  strings. `run_id` is the canonical reference; `captured_path` is
+  informational and may be stale on relocated data.
+- **B.8 verdict suppression** — `comparison_scores.json` no longer
+  publishes `best_*` / `lowest_*` keys when the underlying ranking
+  is sample-density-sensitive AND `trusted == False`. Consumers who
+  want the unfiltered ranking read `rankings_with_confidence` from
+  `comparison_findings.json`. The cadence-immune `fewest_anomalies`
+  always publishes.
+
+### Phase C — regression suite
+
+15 new tests in `tests/test_v1_3_0_regression.py` covering: streaming
+JSONL atomic-rewrite contract; reservoir-sampling stability at
+100k-gap scale; manifest cadence-truth (broken-cadence overwrite +
+zero-sample preservation); input_runs portable shape; recommendation
+dedup with `targets` aggregation; verdict suppression; peer-class
+classifier (enterprise-managed-laptop, personal-desktop, unknown);
+explicit `--machine-class` overrides classifier. Plus 4 new tests
+in `test_comparer_same_host_rules.py` (excludes-list, dedup-within-run)
+and 2 new tests in `test_comparer.py` (storage-namespace tiering).
+**514 unit tests pass, ruff clean, bandit clean (0 medium / 0 high).**
+
 ## [1.2.1] — 2026-05-09
 
 CI fix only — no functional changes from `v1.2.0`. The `v1.2.0` tag
@@ -998,7 +1094,8 @@ comparison tool, session splitter, and per-run HTML report.
 - Scoring heuristics are documented but not machine-learned; they are
   deliberately conservative and explainable rather than optimised.
 
-[Unreleased]: /compare/v1.2.1...HEAD
+[Unreleased]: /compare/v1.3.0...HEAD
+[1.3.0]: /releases/tag/v1.3.0
 [1.2.1]: /releases/tag/v1.2.1
 [1.2.0]: /releases/tag/v1.2.0
 [1.1.0]: /releases/tag/v1.1.0

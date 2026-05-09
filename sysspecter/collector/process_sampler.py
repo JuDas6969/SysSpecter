@@ -142,6 +142,17 @@ def refresh_candidates(
 
     _candidate_pids = {pid for pid in chosen if pid in pid_to_proc}
     _proc_cache = {pid: pid_to_proc[pid] for pid in _candidate_pids}
+
+    # v1.3.0 Phase A.1 (Suspect 3): prune the per-PID rate-derivative
+    # caches alongside `_proc_cache`. Without this, every PID we ever
+    # sampled stays in `_last_io` / `_last_cpu_time` forever — a slow
+    # but unbounded growth on long-running hosts (game launchers, dev
+    # toolchains, EDR child processes). Bounding by the candidate set
+    # keeps memory O(top_n × 4) for the lifetime of the run.
+    global _last_io, _last_cpu_time
+    _last_io = {pid: v for pid, v in _last_io.items() if pid in _candidate_pids}
+    _last_cpu_time = {pid: v for pid, v in _last_cpu_time.items() if pid in _candidate_pids}
+
     _last_enum_time = time.monotonic()
     return _candidate_pids, name_map
 

@@ -1,4 +1,48 @@
-# SysSpecter Roadmap — 3-Week Push to 8/10 Across All Dimensions
+# SysSpecter Roadmap
+
+## v1.4 — deferred from v1.3.0
+
+The v1.3.0 release closes the v1.2 quality holes (self-leak, deadlock
+over-fire, peer_classes None, window_aligned_view no_data,
+primary_disk_tier mis-classifying NVMe, manifest cadence dishonesty,
+recommendation duplicates, dangling absolute paths, low-confidence
+verdicts published). These v1.4 candidate features were called out
+in the v1.3.0 plan as out-of-scope:
+
+- **Cross-run leak signature analyzer** — when a `memory_leak_candidate`
+  for the same process name appears in ≥ 50 % of input runs of a
+  comparison, with slopes within ±10 % of each other, emit a single
+  `cross_run_leak_signature` finding with severity `high`. Would have
+  caught the SysSpecter self-leak as a single high-confidence finding
+  instead of one per run before the v1.3.0 fix.
+- **Validate handle-types capture** — README v1.2 claims
+  `timeline_handles.csv`. Verify the feature actually fires across the
+  v1.2 reference corpus; fix the soft-degrade paths if not.
+- **Validate managed-heap capture** — same for
+  `timeline_managed_heap.csv` (.NET CLR).
+- **JVM and Python managed-heap counters** — extend H2 beyond .NET
+  (JMX for JVM, `tracemalloc` agent for Python).
+- **CPU package power / thermal** — Intel RAPL MSRs and AMD
+  equivalents, behind a phase3 flag.
+- **Process-classification dictionary** — YAML-driven category map
+  (AV / EDR / MDM / browser / dev tool / system) so the comparison
+  engine can attribute "what the security stack costs" without
+  hardcoded names.
+- **Stack-aware leak heuristic** — per-runtime thresholds (JVM
+  steady-state vs Python ref-counted vs .NET workstation-GC vs
+  native) so the leak detector doesn't false-positive on normal JVM
+  heap commits.
+- **Configurable deadlock excludes via YAML** — v1.3.0 ships the
+  exclusion list as a Python frozenset baked into
+  `comparer/same_host_rules.py`. Future iteration: load
+  `sysspecter/domain/deadlock_excludes.yaml` if present, fall back to
+  the default set.
+- **Configurable peer-class rules via YAML** — same pattern for the
+  static-snapshot classifier in `comparer/peer_context.py`.
+
+---
+
+# 3-Week Push to 8/10 Across All Dimensions
 
 > Goal: bring every review dimension from its current score to **≥ 8 / 10**
 > inside 3 focused working weeks, without stalling feature work.

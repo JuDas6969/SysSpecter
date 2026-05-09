@@ -109,3 +109,9 @@ class Config:
     enable_gpu: bool = False
     enable_event_logs: bool = False
     enable_etw_disk: bool = False
+
+    # v1.3.0 Phase A.0: tracemalloc-based self-leak diagnostic. When
+    # True, the runner takes per-minute snapshots and writes a
+    # `leak_profile.txt` to the run dir at end. Default off — costs
+    # 5–15 % sampler overhead.
+    profile_leak: bool = False

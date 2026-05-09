@@ -18,33 +18,70 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 def classify_disk_tier(disk: dict[str, Any] | None) -> str:
-    """Return "NVMe", "SSD", "HDD", or "unknown" for a physical-drive record."""
+    """Return ``"nvme"`` / ``"ssd"`` / ``"hdd"`` / ``"unknown"`` for
+    a physical-drive record.
+
+    v1.3.0 B.4: prefer the modern Storage-namespace fields
+    (``StorageMediaType`` = SSD / HDD / Unspecified, ``StorageBusType``
+    = NVMe / SATA / SAS / USB / …) which `static._disks` now lifts via
+    ``Get-PhysicalDisk``. The legacy ``Win32_DiskDrive.MediaType``
+    returns "Fixed hard disk" for every internal disk including NVMes,
+    so the v1.2 classifier was prone to misclassifying NVMe as HDD.
+
+    Tier values are lowercase so they round-trip cleanly through CSV
+    and JSON without case-sensitivity gotchas. **Never default to
+    ``"hdd"``** — when classification fails, return ``"unknown"`` so
+    the report can flag the gap honestly.
+    """
     if not disk:
         return "unknown"
+
+    # Storage namespace (preferred): ground truth, no name heuristics.
+    storage_media = (disk.get("StorageMediaType") or "").strip().lower()
+    storage_bus = (disk.get("StorageBusType") or "").strip().lower()
+    if storage_bus == "nvme":
+        return "nvme"
+    if storage_media == "ssd":
+        return "ssd"
+    if storage_media == "hdd":
+        return "hdd"
+    # SCM (Storage-Class Memory, e.g. Optane) — treat as nvme-tier
+    # since it's PCIe-attached and seek-penalty-free.
+    if storage_media == "scm":
+        return "nvme"
+
+    # Legacy Win32_DiskDrive heuristics (back-compat for runs captured
+    # before v1.3.0 OR hosts where Get-PhysicalDisk is unavailable).
     model = (disk.get("Model") or "").lower()
     media = (disk.get("MediaType") or "").lower()
     interface = (disk.get("InterfaceType") or "").lower()
 
-    nvme_markers = ("nvme", "nvm express", "pm9a1", "980 pro", "990 pro", "p5", "sn850", "sn770",
-                    "ssd 970", "ssd 960")
+    nvme_markers = ("nvme", "nvm express", "pm9a1", "980 pro", "990 pro", "p5",
+                    "sn850", "sn770", "ssd 970", "ssd 960")
     if "nvme" in model or "nvme" in interface:
-        return "NVMe"
+        return "nvme"
     if any(m in model for m in nvme_markers):
-        return "NVMe"
+        return "nvme"
 
-    ssd_markers = ("ssd", "solid state", "evo", "samsung 860", "samsung 870", "crucial mx",
-                   "intel 660p", "micron")
+    ssd_markers = ("ssd", "solid state", "evo", "samsung 860", "samsung 870",
+                   "crucial mx", "intel 660p", "micron")
     if "ssd" in media or "solid state" in media:
-        return "SSD"
+        return "ssd"
     if any(m in model for m in ssd_markers):
-        return "SSD"
+        return "ssd"
 
-    hdd_markers = ("hdd", "hard", "wd blue", "wd black", "st500", "st1000", "st2000",
-                   "barracuda", "hgst", "toshiba mq")
-    if "hdd" in media or "hard" in media or "rotational" in media:
-        return "HDD"
-    if any(m in model for m in hdd_markers):
-        return "HDD"
+    hdd_markers = ("hdd", "hard", "wd blue", "wd black", "st500", "st1000",
+                   "st2000", "barracuda", "hgst", "toshiba mq")
+    # The "hard" / "rotational" media markers are reliable; the model
+    # markers are aggressive — only trust them when the media field
+    # also says rotational. Fall back to "unknown" otherwise so we
+    # never default to "hdd" silently.
+    if "hard" in media or "rotational" in media:
+        return "hdd"
+    if "hdd" in media:
+        return "hdd"
+    if any(m in model for m in hdd_markers) and ("hdd" in media or not media):
+        return "hdd"
 
     return "unknown"
 
@@ -199,11 +236,11 @@ def generate_hypotheses(
             ha, hb = hws.get(a) or {}, hws.get(b) or {}
             ca, cb = cfgs.get(a) or {}, cfgs.get(b) or {}
 
-            # --- Disk tier rule
+            # --- Disk tier rule (v1.3.0 B.4: lowercase tier values)
             if ra.get("primary") == "disk":
-                tier_a = disk_tier_cache.get(a, "unknown")
-                tier_b = disk_tier_cache.get(b, "unknown")
-                if tier_a == "HDD" and tier_b in ("SSD", "NVMe"):
+                tier_a = (disk_tier_cache.get(a, "unknown") or "unknown").lower()
+                tier_b = (disk_tier_cache.get(b, "unknown") or "unknown").lower()
+                if tier_a == "hdd" and tier_b in ("ssd", "nvme"):
                     out.append({
                         "severity": "high",
                         # v3-priority-3: high confidence — disk-tier delta is
@@ -450,7 +487,17 @@ def bottleneck_comparison(matrix: dict[str, Any]) -> dict[str, Any]:
 
 
 def generate_recommendations(hypotheses: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse hypotheses into deduplicated recommendations per (run, category)."""
+    """Collapse hypotheses into deduplicated recommendations.
+
+    Two-pass dedup:
+      1. Per (run_id, category) — keep the highest-severity item.
+      2. v1.3.0 B.6: per (category, recommendation_text) — merge
+         items with the same recommendation across different runs/
+         processes into a single entry with a `targets` list. This
+         prevents the v1.2 report from showing the SAME recommendation
+         text 3-5 times under different run_ids when several processes
+         on different hosts trip the same rule.
+    """
     bucket: dict[tuple[str, str], dict[str, Any]] = {}
     severity_rank = {"high": 3, "medium": 2, "low": 1}
     for h in hypotheses:
@@ -470,7 +517,41 @@ def generate_recommendations(hypotheses: list[dict[str, Any]]) -> list[dict[str,
                 "based_on": h.get("hypothesis"),
                 "evidence": h.get("evidence") or [],
             }
-    out = list(bucket.values())
+    pass1 = list(bucket.values())
+
+    # v1.3.0 B.6: second-pass merge by (category, recommendation_text).
+    # Identical recommendation strings under different run_ids collapse
+    # into one entry with a `targets` list of run_ids. The renderer
+    # shows that list as a bullet under the consolidated text.
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in pass1:
+        rec_text = r.get("recommendation") or ""
+        key2 = (r.get("category") or "other", rec_text.strip())
+        if not rec_text.strip():
+            # Recommendations without text shouldn't get merged into
+            # a single empty bucket — pass through unchanged.
+            merged[(r.get("category") or "other",
+                    f"__nomerge__{r.get('run_id') or '?'}")] = r
+            continue
+        existing = merged.get(key2)
+        if existing is None:
+            new = dict(r)
+            new["targets"] = [r.get("run_id")] if r.get("run_id") else []
+            merged[key2] = new
+        else:
+            # Promote severity to the highest seen in the merge group.
+            if (severity_rank.get(r.get("severity"), 0)
+                    > severity_rank.get(existing.get("severity"), 0)):
+                existing["severity"] = r.get("severity")
+                existing["confidence"] = r.get("confidence") or existing.get("confidence")
+            target = r.get("run_id")
+            if target and target not in existing.setdefault("targets", []):
+                existing["targets"].append(target)
+            # Aggregate evidence — append unique lines from this hit.
+            for line in (r.get("evidence") or []):
+                if line not in existing.get("evidence", []):
+                    existing.setdefault("evidence", []).append(line)
+    out = list(merged.values())
     out.sort(key=lambda x: (-severity_rank.get(x.get("severity"), 0),
                             str(x.get("run_id") or "")))
     return out

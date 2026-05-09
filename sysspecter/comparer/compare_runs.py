@@ -303,34 +303,92 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
     # purely because its 902 s run integrated over a shorter window
     # than MORGANA's 1469 s.
     def _top_aligned(name: str) -> str | None:
+        # Aligned rankings come from window_alignment.aligned_rankings
+        # which only includes runs with healthy cadence + aligned
+        # window — already implicitly trusted. If the list is non-
+        # empty, the top is publishable.
         ordered = aligned_ranks.get(name) or []
         return ordered[0][0] if ordered else None
 
-    def _top_cadence(name: str) -> str | None:
+    def _top_cadence_trusted(name: str) -> str | None:
+        # v1.3.0 B.8: only return a winner when the cadence-annotated
+        # ranking is fully trusted. When `trusted == False`, the top
+        # entry's value isn't comparable to the rest (broken-cadence
+        # participants distort sample-density-sensitive metrics) and
+        # publishing it as "the winner" misleads. Consumers must
+        # consult `rankings_with_confidence` for the raw data.
         annotated = cadence_rankings.get(name) or {}
+        if not annotated.get("trusted", False):
+            return None
         ordered = annotated.get("ordered") or []
         return ordered[0][0] if ordered else None
 
     def _top(name: str) -> str | None:
-        return _top_aligned(name) or _top_cadence(name)
+        # Cap-window-aligned wins (always trusted by construction);
+        # else fall back to the cadence-annotated path which now
+        # gates on `trusted`.
+        return _top_aligned(name) or _top_cadence_trusted(name)
+
+    # Event-count rankings (`fewest_anomalies`) are cadence-immune so
+    # they always publish. The `lowest_*` metrics are sample-density-
+    # sensitive and gate on the cadence-annotated `trusted` flag —
+    # if that's false, the key is omitted.
+    def _top_event_count(name: str) -> str | None:
+        annotated = cadence_rankings.get(name) or {}
+        ordered = annotated.get("ordered") or []
+        return ordered[0][0] if ordered else None
 
     comparison_scores = {
-        "best_overall": _top("best_overall"),
-        "most_stable": _top("best_stability"),
-        "best_efficiency": _top("best_efficiency"),
-        "lowest_cpu_avg": _top_cadence("lowest_cpu_avg"),
-        "lowest_latency_p95": _top_cadence("lowest_latency_p95"),
-        "fewest_anomalies": _top_cadence("fewest_anomalies"),
         # Surface which window the score-based verdicts were chosen on
         # so consumers don't have to guess.
         "chosen_window": aligned_window or "full_run",
+        # v1.3.0 B.8: the score-based verdicts are sample-density-
+        # sensitive. Omit when neither aligned nor cadence-trusted has
+        # a winner. Consumers reading the resulting JSON should treat
+        # missing keys as "insufficient confidence — see
+        # rankings_with_confidence for raw data".
     }
+    for verdict_key, ranking_key in (
+        ("best_overall", "best_overall"),
+        ("most_stable", "best_stability"),
+        ("best_efficiency", "best_efficiency"),
+    ):
+        winner = _top(ranking_key)
+        if winner is not None:
+            comparison_scores[verdict_key] = winner
+    # `lowest_*` metrics are sample-density-sensitive — gate on cadence
+    # trust without falling back to the aligned ranking (which doesn't
+    # include them).
+    for verdict_key, ranking_key in (
+        ("lowest_cpu_avg", "lowest_cpu_avg"),
+        ("lowest_latency_p95", "lowest_latency_p95"),
+    ):
+        winner = _top_cadence_trusted(ranking_key)
+        if winner is not None:
+            comparison_scores[verdict_key] = winner
+    # `fewest_anomalies` is cadence-immune — always publishable.
+    fewest = _top_event_count("fewest_anomalies")
+    if fewest is not None:
+        comparison_scores["fewest_anomalies"] = fewest
     atomic_write_json(paths.scores, comparison_scores)
 
+    # v1.3.0 B.7: store input_runs as {run_id, captured_path} objects
+    # instead of raw dev-time paths. `run_id` is the canonical
+    # reference (matches the run folder name and `manifest.run_id`);
+    # `captured_path` is informational and may be stale if data is
+    # relocated between machines. Consumers should resolve `run_id`
+    # against their own Runs/ root.
+    input_runs_portable = []
+    for rd_path, r in zip(run_dirs, loaded, strict=False):
+        run_id = (r.get("manifest") or {}).get("run_id")
+        input_runs_portable.append({
+            "run_id": run_id,
+            "captured_path": rd_path,
+        })
     atomic_write_json(paths.manifest, {
         "comparison_id": paths.comparison_id,
         "started_at": _dt.datetime.now().isoformat(timespec="seconds"),
-        "input_runs": run_dirs,
+        "input_runs": input_runs_portable,
         "mode": mode,
     })
 

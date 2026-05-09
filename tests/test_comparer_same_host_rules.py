@@ -81,24 +81,34 @@ def _run(
 
 def _proc_samples_with_plateau(
     pid: int, name: str, *,
-    n: int = 60,
+    n: int = 700,
     interval_s: float = 1.0,
     rss_max: int = 15 * 1024 ** 3,  # 15 GB
     handles_max: int = 29_000,
     tail_cpu: float = 0.5,
     growing_cpu: float = 80.0,
 ) -> list[dict]:
-    """Generate process samples that grow then plateau (deadlock signature)."""
+    """Generate process samples that grow then plateau (deadlock
+    signature for v1.3.0 B.1 detector).
+
+    Defaults to 700 samples so the timeline covers the new tightened
+    thresholds:
+      - growth phase: 200 s (≥ 180 s required)
+      - plateau phase: 500 s (≥ 120 s required)
+      - within plateau: 500 s of CPU<1% (≥ 300 s required)
+    """
     out = []
-    half = n // 2
+    growth_n = 200
     for i in range(n):
         rel = i * interval_s
-        # First half: growing; second half: plateau at max.
-        if i < half:
-            rss = int(rss_max * (i + 1) / half)
-            handles = int(handles_max * (i + 1) / half)
+        if i < growth_n:
+            # Linear RSS + handles growth, CPU at growing_cpu (= work
+            # being done — high R² and slope).
+            rss = int(rss_max * (i + 1) / growth_n)
+            handles = int(handles_max * (i + 1) / growth_n)
             cpu = growing_cpu
         else:
+            # Plateau: RSS pinned at max, CPU collapses to tail_cpu.
             rss = rss_max
             handles = handles_max
             cpu = tail_cpu
@@ -205,25 +215,28 @@ def test_regime_change_does_not_fire_on_normal_jitter() -> None:
 # --- Rule 3: deterministic-deadlock signature ---------------------
 
 def test_deterministic_deadlock_fires_when_two_runs_match() -> None:
-    """RSS plateau + handles plateau + CPU → 0 in 2 of 3 runs on
-    the same process name."""
+    """v1.3.0 B.1: full sequence (180s growth + 120s plateau + 300s
+    CPU-zero + handle correlation) in 2 of 3 runs on the same process
+    name. Default fixture is 700s long so all phases pass."""
     runs = [
         _run("run1", process_rows=_proc_samples_with_plateau(
-            pid=4712, name="MotoDB.exe", n=60,
+            pid=4712, name="MotoDB.exe",
         )),
         _run("run2", process_rows=_proc_samples_with_plateau(
-            pid=5230, name="MotoDB.exe", n=60,
+            pid=5230, name="MotoDB.exe",
         )),
         # Third run: same process but no deadlock (CPU stays high)
         _run("run3", process_rows=_proc_samples_with_plateau(
-            pid=6001, name="MotoDB.exe", n=60,
+            pid=6001, name="MotoDB.exe",
             tail_cpu=80.0,  # still active — no deadlock
         )),
     ]
     findings = detect_deterministic_deadlocks(runs)
     dl = [f for f in findings if f["kind"] == "deterministic_deadlock"]
     assert len(dl) == 1
+    # 2 of 3 runs = 67 % share → high severity per v1.3.0 calibration.
     assert dl[0]["severity"] == "high"
+    assert dl[0]["confidence"] == "high"
     assert "MotoDB.exe" in dl[0]["hypothesis"]
     assert len(dl[0]["affected_runs"]) == 2
 
@@ -239,16 +252,54 @@ def test_deterministic_deadlock_does_not_fire_for_single_run() -> None:
 
 
 def test_deterministic_deadlock_skips_short_runs() -> None:
-    """Tail-window analysis needs >= 30 samples per process."""
+    """v1.3.0 B.1: a 60-sample timeline can't satisfy the 180s growth
+    + 120s plateau + 300s CPU-zero requirements — no match."""
     runs = [
         _run("a", process_rows=_proc_samples_with_plateau(
-            pid=1, name="x", n=10,
+            pid=1, name="x", n=60,
         )),
         _run("b", process_rows=_proc_samples_with_plateau(
-            pid=1, name="x", n=10,
+            pid=1, name="x", n=60,
         )),
     ]
     assert detect_deterministic_deadlocks(runs) == []
+
+
+def test_deterministic_deadlock_excludes_known_false_positives() -> None:
+    """v1.3.0 B.1: svchost.exe and friends never fire — they're in the
+    default-excludes list (the v1.2 case where svchost reported "503
+    of 6 runs" was the most-egregious false positive)."""
+    runs = [
+        _run("a", process_rows=_proc_samples_with_plateau(
+            pid=900, name="svchost.exe",
+        )),
+        _run("b", process_rows=_proc_samples_with_plateau(
+            pid=901, name="svchost.exe",
+        )),
+    ]
+    assert detect_deterministic_deadlocks(runs) == []
+
+
+def test_deterministic_deadlock_dedup_within_run() -> None:
+    """v1.3.0 B.1: two PIDs of the same name in ONE run count as ONE
+    match. The v1.2 'count=12 of 6 runs' bug came from cross-run PID
+    counting — this guard prevents that."""
+    # Two MotoDB PIDs in run1, one in run2 — should still report
+    # "2 of 2" (or skip if only 1 unique run) not "3 of 2".
+    rows1 = (_proc_samples_with_plateau(pid=4712, name="MotoDB.exe")
+             + _proc_samples_with_plateau(pid=4713, name="MotoDB.exe"))
+    runs = [
+        _run("run1", process_rows=rows1),
+        _run("run2", process_rows=_proc_samples_with_plateau(
+            pid=5000, name="MotoDB.exe",
+        )),
+    ]
+    findings = detect_deterministic_deadlocks(runs)
+    dl = [f for f in findings if f["kind"] == "deterministic_deadlock"]
+    assert len(dl) == 1
+    # Affected runs is unique by run_id — must be exactly 2 (not 3).
+    assert len(dl[0]["affected_runs"]) == 2
+    assert "2 of 2" in dl[0]["hypothesis"]
 
 
 # --- Rule 4: cross-run invariants --------------------------------

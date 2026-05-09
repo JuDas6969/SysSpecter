@@ -31,7 +31,7 @@ def _make_paths(tmp_path: Path) -> RunPaths:
     )
 
 
-def test_build_manifest_has_required_v2_fields(tmp_path: Path) -> None:
+def test_build_manifest_has_required_v3_fields(tmp_path: Path) -> None:
     paths = _make_paths(tmp_path)
     cfg = Config(
         output_root=str(tmp_path), mode="baseline", duration=300,
@@ -42,7 +42,7 @@ def test_build_manifest_has_required_v2_fields(tmp_path: Path) -> None:
     m = build_run_manifest(paths, cfg)
 
     # Schema contract the reporter relies on.
-    assert m["schema_version"] == 2
+    assert m["schema_version"] == 3
     assert m["run_id"] == paths.run_id
     assert m["mode"] == "baseline"
     assert m["duration_requested_seconds"] == 300

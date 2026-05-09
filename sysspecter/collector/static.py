@@ -117,6 +117,65 @@ def _memory(logger: logging.Logger | None) -> dict[str, Any]:
     }
 
 
+def _physical_disks_storage_namespace(
+    logger: logging.Logger | None,
+) -> list[dict[str, Any]]:
+    """v1.3.0 B.4: query the modern Storage WMI namespace
+    (`Get-PhysicalDisk`) for ground-truth `MediaType` (SSD / HDD /
+    Unspecified) and `BusType` (NVMe / SATA / SAS / USB / …). The
+    legacy `Win32_DiskDrive.MediaType` returns "Fixed hard disk" for
+    every internal disk including NVMes — useless for tier
+    classification. The new namespace correctly distinguishes 4
+    (HDD) / 3 (SSD), and BusType=17 (NVMe) is unambiguous.
+
+    Returns a list of dicts with the raw values; the classifier
+    (`comparer/diagnosis.classify_disk_tier`) consumes them. Empty
+    list when PowerShell / WMI is unreachable; the caller falls back
+    to the legacy classification path.
+    """
+    cmd = (
+        "Get-PhysicalDisk | "
+        "Select-Object DeviceId, FriendlyName, MediaType, BusType, "
+        "Size, SerialNumber"
+    )
+    result = run_ps_json(cmd, timeout=15.0, logger=logger)
+    if result is None:
+        return []
+    if isinstance(result, dict):
+        result = [result]
+    out: list[dict[str, Any]] = []
+    # Numeric -> string mappings for the values PowerShell sometimes
+    # returns as enums and sometimes as ints depending on host build.
+    media_type_map = {
+        0: "Unspecified", 3: "HDD", 4: "SSD", 5: "SCM",
+    }
+    bus_type_map = {
+        0: "Unknown", 1: "SCSI", 2: "ATAPI", 3: "ATA", 4: "1394",
+        5: "SSA", 6: "Fibre Channel", 7: "USB", 8: "RAID", 9: "iSCSI",
+        10: "SAS", 11: "SATA", 12: "SD", 13: "MMC", 14: "Virtual",
+        15: "FileBackedVirtual", 16: "Storage Spaces", 17: "NVMe",
+        18: "Microsoft Reserved",
+    }
+    for r in result:
+        mt = r.get("MediaType")
+        bt = r.get("BusType")
+        # PowerShell returns these as int-like or already-string;
+        # canonicalise to strings.
+        if isinstance(mt, int):
+            mt = media_type_map.get(mt, str(mt))
+        if isinstance(bt, int):
+            bt = bus_type_map.get(bt, str(bt))
+        out.append({
+            "DeviceId": r.get("DeviceId"),
+            "FriendlyName": r.get("FriendlyName"),
+            "MediaType": mt,
+            "BusType": bt,
+            "Size": r.get("Size"),
+            "SerialNumber": r.get("SerialNumber"),
+        })
+    return out
+
+
 def _disks(logger: logging.Logger | None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for part in psutil.disk_partitions(all=False):
@@ -133,13 +192,43 @@ def _disks(logger: logging.Logger | None) -> list[dict[str, Any]]:
             "opts": part.opts,
             "usage": usage,
         })
+    # Legacy Win32_DiskDrive — kept for back-compat; the classifier
+    # consults the storage-namespace fields first.
     physical = _wmi_query(
         "Win32_DiskDrive",
         ["Model", "Size", "MediaType", "InterfaceType", "SerialNumber"],
         logger,
     )
+    # v1.3.0 B.4: enrich each physical-drive record with ground-truth
+    # MediaType + BusType from the modern Storage namespace. We match
+    # by Model name when possible — Win32_DiskDrive's model is the
+    # same string Get-PhysicalDisk returns as FriendlyName.
+    storage_disks = _physical_disks_storage_namespace(logger)
+    by_friendly = {
+        (d.get("FriendlyName") or "").strip(): d
+        for d in storage_disks
+        if d.get("FriendlyName")
+    }
     for p in physical:
-        out.append({"_physical_drive": p})
+        rec: dict[str, Any] = dict(p)
+        model = (p.get("Model") or "").strip()
+        match = by_friendly.get(model)
+        if match:
+            rec["StorageMediaType"] = match.get("MediaType")
+            rec["StorageBusType"] = match.get("BusType")
+        out.append({"_physical_drive": rec})
+    # If WMI Win32_DiskDrive failed but Get-PhysicalDisk worked,
+    # surface the storage-namespace records on their own so we still
+    # have something to classify on.
+    if not physical and storage_disks:
+        for d in storage_disks:
+            out.append({"_physical_drive": {
+                "Model": d.get("FriendlyName"),
+                "Size": d.get("Size"),
+                "SerialNumber": d.get("SerialNumber"),
+                "StorageMediaType": d.get("MediaType"),
+                "StorageBusType": d.get("BusType"),
+            }})
     return out
 
 

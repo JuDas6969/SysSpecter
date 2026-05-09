@@ -30,7 +30,16 @@ def build_run_manifest(paths: RunPaths, config: Config) -> dict[str, Any]:
     # hostname renames.
     mid = compute_machine_id()
     return {
-        "schema_version": 2,
+        # v1.3.0 schema_version bump: top-level `interval_seconds`
+        # now reflects the OBSERVED median gap (post-finalisation),
+        # not the declared target. New sibling fields
+        # `interval_seconds_target`, `interval_seconds_observed_median`,
+        # `interval_seconds_observed_p95`, `samples_emitted`,
+        # `samples_target_estimate` make the relationship explicit.
+        # During the run (between start and finalisation) the
+        # `interval_seconds` field still echoes the target — it's
+        # rewritten by `update_manifest_end`.
+        "schema_version": 3,
         "sysspecter_version": _SS_VERSION,
         "run_id": paths.run_id,
         "hostname": paths.hostname,
@@ -43,7 +52,19 @@ def build_run_manifest(paths: RunPaths, config: Config) -> dict[str, Any]:
         "mode": config.mode,
         "duration_requested_seconds": config.duration,
         "duration_actual_seconds": None,
+        # `interval_seconds` is overwritten at finalisation with the
+        # observed median (see `update_manifest_end`). At run start
+        # it carries the target so consumers reading a partial
+        # manifest get a meaningful value.
         "interval_seconds": config.interval,
+        # v1.3.0 B.5: explicit target stays untouched throughout the
+        # run; downstream consumers reading
+        # `interval_seconds_target` know what was asked for.
+        "interval_seconds_target": config.interval,
+        "interval_seconds_observed_median": None,
+        "interval_seconds_observed_p95": None,
+        "samples_emitted": None,
+        "samples_target_estimate": None,
         "manual_stop": config.manual_stop,
         "tags": list(config.tags),
         # Field-review M2: structured fleet metadata. Distinct from
@@ -101,6 +122,24 @@ def update_manifest_end(
     data["duration_actual_seconds"] = round(actual_duration, 2)
     if cadence_quality is not None:
         data["cadence_quality"] = cadence_quality
+        # v1.3.0 B.5: rewrite top-level cadence fields so consumers
+        # reading the manifest after run-end see the OBSERVED reality,
+        # not the declared target. Keep `interval_seconds_target` as
+        # the immutable record of what was asked for. Only rewrite
+        # `interval_seconds` when we actually have observed data
+        # (samples_total > 0) — on a 0-sample run the target stays.
+        target = data.get("interval_seconds_target") or data.get("interval_seconds")
+        observed_median = cadence_quality.get("median_gap_seconds")
+        observed_p95 = cadence_quality.get("p95_gap_seconds")
+        samples_emitted = cadence_quality.get("samples_total") or 0
+        if observed_median and samples_emitted > 1:
+            data["interval_seconds"] = observed_median
+        data["interval_seconds_target"] = target
+        data["interval_seconds_observed_median"] = observed_median
+        data["interval_seconds_observed_p95"] = observed_p95
+        data["samples_emitted"] = samples_emitted
+        if target and target > 0:
+            data["samples_target_estimate"] = int(round(actual_duration / float(target)))
     if process_priority_class is not None:
         data["process_priority_class"] = process_priority_class
     tmp = manifest_path + ".tmp"

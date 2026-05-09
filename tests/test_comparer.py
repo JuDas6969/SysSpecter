@@ -59,19 +59,48 @@ def test_mode_label_present_for_every_mode() -> None:
 
 
 def test_classify_disk_tier_nvme_samsung_980_pro() -> None:
+    """v1.3.0 B.4: tier values are lowercase. NVMe model heuristic
+    still works (the legacy fallback path)."""
     disk = {"Model": "Samsung 980 Pro 1TB", "MediaType": "SSD", "InterfaceType": "SCSI"}
-    assert classify_disk_tier(disk) == "NVMe"
+    assert classify_disk_tier(disk) == "nvme"
 
 
 def test_classify_disk_tier_hdd() -> None:
+    """v1.3.0 B.4: HDD media-type still classifies via the legacy path
+    when StorageMediaType isn't supplied."""
     disk = {"Model": "ST1000LM035", "MediaType": "Fixed hard disk media",
             "InterfaceType": "SCSI"}
-    assert classify_disk_tier(disk) == "HDD"
+    assert classify_disk_tier(disk) == "hdd"
 
 
 def test_classify_disk_tier_ssd() -> None:
     disk = {"Model": "Samsung SSD 870 EVO 500GB", "MediaType": "SSD", "InterfaceType": "SCSI"}
-    assert classify_disk_tier(disk) == "SSD"
+    assert classify_disk_tier(disk) == "ssd"
+
+
+def test_classify_disk_tier_storage_namespace_nvme() -> None:
+    """v1.3.0 B.4: when Get-PhysicalDisk supplies BusType=NVMe, that's
+    ground truth — overrides any model-name heuristic guess."""
+    disk = {
+        "Model": "GenericModel SSD 1TB",
+        "MediaType": "SSD",
+        "StorageMediaType": "SSD",
+        "StorageBusType": "NVMe",
+    }
+    assert classify_disk_tier(disk) == "nvme"
+
+
+def test_classify_disk_tier_storage_namespace_unspecified_does_not_default_to_hdd() -> None:
+    """v1.3.0 B.4: when StorageMediaType is Unspecified AND the model
+    has no markers, return `unknown` — never silently default to HDD.
+    This is the v1.2 MORGANA bug the plan called out."""
+    disk = {
+        "Model": "Some Generic Disk",
+        "MediaType": "Unspecified",
+        "StorageMediaType": "Unspecified",
+        "StorageBusType": "SATA",
+    }
+    assert classify_disk_tier(disk) == "unknown"
 
 
 def test_classify_disk_tier_unknown_on_empty() -> None:

@@ -118,6 +118,14 @@ def _build_parser() -> argparse.ArgumentParser:
                         "fields. Use this when the run will be shared with "
                         "an external vendor.")
 
+    # v1.3.0 Phase A.0: tracemalloc-based self-leak diagnostic. Writes
+    # `leak_profile.txt` into the run dir at run end. Default off — only
+    # turn on when investigating SysSpecter's own RSS growth.
+    m.add_argument("--profile-leak", action="store_true", dest="profile_leak",
+                   help="Capture a tracemalloc profile of SysSpecter's own "
+                        "memory growth during the run. Writes leak_profile.txt "
+                        "into the run folder. Adds 5-15%% sampler overhead.")
+
     c = sub.add_parser("compare", help="Compare multiple completed runs")
     c.add_argument("--runs", nargs="+", default=None,
                    help="Explicit list of run folders to compare")
@@ -319,6 +327,7 @@ def _cmd_monitor(args: argparse.Namespace) -> int:
         enable_gpu=enable_gpu,
         enable_event_logs=enable_event_logs,
         enable_etw_disk=enable_etw_disk,
+        profile_leak=getattr(args, "profile_leak", False),
     )
     try:
         run_dir = run_monitor(config)

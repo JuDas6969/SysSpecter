@@ -73,6 +73,7 @@ from .handles_sampler import collect_handles_snapshot
 from .handles_sampler import to_csv_rows as handles_to_csv_rows
 from .latency_sampler import collect_latency_sample
 from .latency_sampler import sample_to_dict as lat_sample_to_dict
+from .leak_profiler import LeakProfiler
 from .managed_heap_sampler import collect_managed_heap_snapshot
 from .managed_heap_sampler import to_csv_rows as managed_heap_to_csv_rows
 from .network_sampler import collect_network_sample
@@ -93,6 +94,7 @@ from .static import (
     collect_service_snapshot,
     collect_static_snapshot,
 )
+from .streaming_jsonl import StreamingGapStats, StreamingJSONL
 from .system_sampler import collect_system_sample
 from .system_sampler import sample_to_dict as system_sample_to_dict
 
@@ -239,6 +241,51 @@ def _summarise_cadence(
     }
 
 
+def _summarise_cadence_from_stats(
+    nominal_interval_s: float,
+    stats: StreamingGapStats,
+) -> dict[str, Any]:
+    """v1.3.0 Phase A.1: same shape as _summarise_cadence, but reads
+    from the streaming O(1) accumulator instead of a list-of-every-gap.
+
+    Output keys are byte-identical to _summarise_cadence so the
+    cadence_quality block in the manifest is unchanged. Tests for
+    _summarise_cadence are still valid for the per-list path.
+    """
+    if stats.n == 0:
+        return {
+            "nominal_interval_seconds": nominal_interval_s,
+            "samples_total": 0,
+            "median_gap_seconds": 0.0,
+            "p95_gap_seconds": 0.0,
+            "max_gap_seconds": 0.0,
+            "gaps_over_2x_nominal": 0,
+            "gaps_over_5x_nominal": 0,
+            "cadence_health": "no_data",
+            "ratio_median_to_nominal": 0.0,
+        }
+    median = stats.percentile(50.0)
+    p95 = stats.percentile(95.0)
+    ratio = median / nominal_interval_s if nominal_interval_s > 0 else 0.0
+    if ratio <= 1.5:
+        health = "good"
+    elif ratio <= 3.0:
+        health = "degraded"
+    else:
+        health = "broken"
+    return {
+        "nominal_interval_seconds": nominal_interval_s,
+        "samples_total": stats.n + 1,  # +1 for the first sample (no gap)
+        "median_gap_seconds": round(median, 3),
+        "p95_gap_seconds": round(p95, 3),
+        "max_gap_seconds": round(stats.max, 3),
+        "gaps_over_2x_nominal": stats.gaps_over_2x_nominal,
+        "gaps_over_5x_nominal": stats.gaps_over_5x_nominal,
+        "cadence_health": health,
+        "ratio_median_to_nominal": round(ratio, 2),
+    }
+
+
 def run_monitor(config: Config) -> str:
     """Run one monitoring session. Returns path to the run folder."""
     global _stop_requested
@@ -323,8 +370,19 @@ def run_monitor(config: Config) -> str:
         else:
             logger.info("Phase 3: ETW disk capture started")
 
-    process_events: list[dict[str, Any]] = []
-    service_events: list[dict[str, Any]] = []
+    # v1.3.0 Phase A.1 (Suspect 1): stream events to disk as they
+    # arrive instead of accumulating in memory for the run's full
+    # duration. Closes the prime self-leak suspect: a 4-h run with
+    # ~25 events / minute kept 6000 dicts (~1 MB+) in memory until end.
+    process_events_stream = StreamingJSONL(
+        paths.process_events, recent_cap=1000,
+    )
+    service_events_stream = StreamingJSONL(
+        paths.service_events, recent_cap=500,
+    )
+    process_events_stream.open()
+    service_events_stream.open()
+
     prev_proc_map = _proc_map_from_snapshot(start_procs)
     prev_services = start_services
 
@@ -332,6 +390,15 @@ def run_monitor(config: Config) -> str:
     # hosts hit cadence under load. Result is recorded in the manifest
     # so the comparison engine can attribute cadence drift correctly.
     priority_class = _set_high_priority_class(logger)
+
+    # v1.3.0 Phase A.0: tracemalloc-based self-leak profiler. Off by
+    # default; activated via --profile-leak. Cheap when off (returns
+    # None), 5-15 % overhead when on.
+    leak_profiler = LeakProfiler.start_if_enabled(
+        getattr(config, "profile_leak", False),
+    )
+    if leak_profiler is not None:
+        logger.info("self-leak profiler ON — leak_profile.txt will be written at run end")
 
     started_mono = time.monotonic()
     started_wall = time.time()
@@ -350,11 +417,13 @@ def run_monitor(config: Config) -> str:
 
     stop_reason = "completed"
     sample_count = 0
-    # v3-priority-1: track every observed gap so we can write a
-    # cadence_quality block to the manifest at run-end. The first
-    # sample's gap is 0.0 (no predecessor) — _summarise_cadence
-    # filters that out.
-    observed_gaps: list[float] = []
+    # v3-priority-1 / v1.3.0 Phase A.1: streaming gap statistics for
+    # the manifest's cadence_quality block. The v1.2 implementation
+    # accumulated every gap in a list (small but unbounded in run
+    # length); StreamingGapStats gives the same median / p95 / max /
+    # over-Nx-counts in O(1) memory regardless of how long the run
+    # goes (reservoir + running counters).
+    gap_stats = StreamingGapStats()
 
     _print_start_banner(paths, config)
 
@@ -377,8 +446,13 @@ def run_monitor(config: Config) -> str:
             # can compute sample_late_ms (= how late this tick fired
             # vs. the schedule). Without this, late_ms is always 0.
             sys_sample = collect_system_sample(started_mono, scheduled_at=next_tick)
-            observed_gaps.append(sys_sample.gap_seconds)
+            gap_stats.add(sys_sample.gap_seconds, nominal_interval_s=config.interval)
             system_csv.write(system_sample_to_dict(sys_sample))
+
+            # v1.3.0 Phase A.0: tracemalloc snapshot every 60 s when
+            # --profile-leak is on. Cheap no-op when off.
+            if leak_profiler is not None:
+                leak_profiler.maybe_snapshot(now)
             # H5: emit one per-core row per sample. Same timestamp /
             # rel_seconds keys so a join recovers the system context.
             for idx, core_pct in enumerate(sys_sample.cpu_per_core_pct):
@@ -483,7 +557,7 @@ def run_monitor(config: Config) -> str:
                     prev_proc_map, curr_map, rel, sys_sample.timestamp
                 )
                 if events:
-                    process_events.extend(events)
+                    process_events_stream.write_many(events)
                 prev_proc_map = curr_map
 
                 new_services, svc_events = refresh_and_diff_services(
@@ -491,7 +565,7 @@ def run_monitor(config: Config) -> str:
                 )
                 prev_services = new_services
                 if svc_events:
-                    service_events.extend(svc_events)
+                    service_events_stream.write_many(svc_events)
 
                 try:
                     conn_samples = collect_connection_snapshot(started_mono)
@@ -579,8 +653,18 @@ def run_monitor(config: Config) -> str:
         logger.info("stopping: reason=%s samples=%d duration=%.1fs",
                     stop_reason, sample_count, actual_duration)
 
-        atomic_write_json(paths.process_events, process_events)
-        atomic_write_json(paths.service_events, service_events)
+        # v1.3.0 Phase A.1: finalize the streaming JSONL files into
+        # single JSON arrays so existing analyzer/loader.py consumers
+        # see the same shape as v1.2 (`json.load(...) -> list`). The
+        # in-memory accumulators are gone — these files were being
+        # appended to throughout the run.
+        try:
+            process_events_stream.finalize_as_json_array()
+            process_events_stream.close()
+            service_events_stream.finalize_as_json_array()
+            service_events_stream.close()
+        except Exception as e:
+            logger.warning("event-stream finalization failed: %s", e)
 
         if etw_session is not None:
             try:
@@ -604,7 +688,9 @@ def run_monitor(config: Config) -> str:
         # v3-priority-1: stamp the cadence-quality block onto the
         # manifest so consumers (especially the comparison engine)
         # can refuse cross-run analyses across heterogeneous cadence.
-        cadence_quality = _summarise_cadence(config.interval, observed_gaps)
+        # v1.3.0 Phase A.1: read from the streaming accumulator
+        # instead of the (now-deleted) per-tick gap list.
+        cadence_quality = _summarise_cadence_from_stats(config.interval, gap_stats)
         if cadence_quality["cadence_health"] != "good":
             logger.warning(
                 "cadence drift detected: median %.1fs vs nominal %.1fs (health=%s, "
@@ -632,6 +718,15 @@ def run_monitor(config: Config) -> str:
             logger.info("phase3 captured map: %s", captured)
         except Exception as e:
             logger.warning("phase3_captured stamping failed: %s", e)
+
+        # v1.3.0 Phase A.0: write the leak-profile report. Safe no-op
+        # when --profile-leak was off (leak_profiler is None) or when
+        # no snapshots were taken (very short run).
+        if leak_profiler is not None:
+            try:
+                leak_profiler.write_report(paths.run_dir)
+            except Exception as e:
+                logger.warning("leak_profile.txt write failed: %s", e)
 
     print("  Analysiere Daten und baue Report...", flush=True)
     logger.info("running analysis + reports...")
