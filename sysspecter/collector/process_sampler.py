@@ -34,7 +34,10 @@ _last_cpu_time: dict[int, tuple[float, float]] = {}  # pid -> (user, system) cum
 _last_sample_mono: float | None = None
 
 
-@dataclass
+# v1.3.1 (Suspect 4): slots=True drops per-instance __dict__. On a
+# typical run that's 50 candidate processes × 1 sample/sec × ~80
+# bytes saved = ~4 KB/sample reduction in process-CSV-row churn.
+@dataclass(slots=True)
 class ProcessSample:
     pid: int
     name: str

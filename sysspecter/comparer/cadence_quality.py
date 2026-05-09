@@ -417,9 +417,23 @@ def annotate_rankings(
                 kept.append((run_id, value, "trusted"))
         worst = worst_health([by_id[rid] for rid, _, _ in kept if rid in by_id]) \
             if kept else HEALTH_UNKNOWN
+        # v1.3.1 fix: a sample-density-sensitive ranking is `trusted`
+        # ONLY when:
+        #   - all kept participants have GOOD cadence (no degraded /
+        #     unknown survivors), AND
+        #   - no participants got excluded due to broken cadence
+        #     (excluding any participant means the ranking no longer
+        #     represents the full cohort honestly).
+        # v1.3.0 only checked the kept set's worst-cadence; that
+        # let comparison_scores.json publish all 6 verdicts even
+        # when ATLT4407 was marked "<1/3 of nominal cadence" because
+        # ATLT4407 was already excluded so the surviving MORGANA-only
+        # ranking was internally consistent. The user's review:
+        # "Suppression checkt nur den Sieger, nicht ob die
+        # Vergleichsbasis kaputt ist". Now it does.
         all_trusted = (
             kind != "sample_density_sensitive"
-            or worst == HEALTH_GOOD
+            or (worst == HEALTH_GOOD and not excluded)
         )
         out[name] = {
             "ordered": kept,

@@ -60,6 +60,16 @@ def _commit_charge() -> tuple[int | None, int | None]:
 # Reporting `max(CurrentMhz)` across all logical CPUs catches even
 # single-core boosts that a single-CPU read would miss.
 
+# v1.3.1 (Suspect 4 mitigation): cache the ctypes array type AND its
+# instance at module load. The v1.2/v1.3.0 path created a fresh array
+# type via `_PROCESSOR_POWER_INFORMATION * n_cpus` on every call,
+# which leaks ctypes type objects (Python doesn't dedupe these by
+# value). Plus a fresh array instance per call. Two allocations
+# replaced by zero on the steady-state path.
+_FREQ_BUF: ctypes.Array | None = None
+_FREQ_BUF_SIZE: int = 0
+
+
 class _PROCESSOR_POWER_INFORMATION(ctypes.Structure):
     _fields_ = [
         ("Number", wintypes.ULONG),
@@ -83,13 +93,20 @@ def _cpu_freq_via_ntpower() -> tuple[float | None, float | None, float | None]:
     frequency value: max CurrentMhz across all logical CPUs at this
     instant, so any single-core turbo boost is captured.
     """
+    global _FREQ_BUF, _FREQ_BUF_SIZE
     try:
         n_cpus = psutil.cpu_count(logical=True) or 1
-        arr_t = _PROCESSOR_POWER_INFORMATION * n_cpus
-        arr = arr_t()
+        # v1.3.1: only re-allocate the array when the CPU count changed
+        # (effectively never on a stable host). Reuses a single ctypes
+        # array buffer for the lifetime of the process.
+        if _FREQ_BUF is None or _FREQ_BUF_SIZE != n_cpus:
+            arr_t = _PROCESSOR_POWER_INFORMATION * n_cpus
+            _FREQ_BUF = arr_t()
+            _FREQ_BUF_SIZE = n_cpus
+        arr = _FREQ_BUF
         rc = ctypes.windll.powrprof.CallNtPowerInformation(
             _PROCESSOR_INFORMATION, None, 0,
-            ctypes.byref(arr), ctypes.sizeof(arr_t),
+            ctypes.byref(arr), ctypes.sizeof(arr),
         )
     except Exception:
         _log.debug("CallNtPowerInformation unavailable", exc_info=True)
@@ -111,7 +128,10 @@ _last_net: dict[str, Any] | None = None
 _last_ts: float | None = None
 
 
-@dataclass
+# v1.3.1 (Suspect 4 mitigation): `slots=True` removes the per-instance
+# `__dict__` (saves ~80 bytes / sample). On a 1 Hz run that's ~5 MB
+# saved over an 8-h capture, plus reduced allocation churn for the GC.
+@dataclass(slots=True)
 class SystemSample:
     timestamp: float
     rel_seconds: float

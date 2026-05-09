@@ -97,20 +97,33 @@ def test_detect_aligned_window_falls_back_to_smaller_when_only_some_have_8h() ->
     assert detect_aligned_window(loaded) == "last_1h"
 
 
-def test_detect_aligned_window_returns_none_when_one_run_too_short() -> None:
-    """ATLT4407 was 902 s — too short for a 1 h window. Without a
-    common tail window, the score-based rankings should NOT be
-    silently length-biased."""
+def test_detect_aligned_window_falls_back_to_dynamic_when_canonical_unavailable() -> None:
+    """v1.3.1: when no run can produce a canonical tail window, fall
+    back to a dynamic window equal to the shortest run's duration.
+    Previously (v1.3.0) this returned None and the comparison report
+    silently published all six verdicts as length-biased — which the
+    v1.2 production review specifically called out."""
     loaded = [
-        _run("ATLT4407", tail_windows=[]),
-        _run("MORGANA", tail_windows=[_tail_block("last_1h")]),
+        _run("ATLT4407", tail_windows=[], duration_s=902.0),
+        _run("MORGANA", tail_windows=[_tail_block("last_1h")], duration_s=1469.0),
     ]
-    assert detect_aligned_window(loaded) is None
+    label = detect_aligned_window(loaded)
+    # min(902, 1469) = 902 → rounds down to 900 s.
+    assert label == "dynamic_900s"
 
 
-def test_detect_aligned_window_returns_none_for_legacy_runs() -> None:
-    """Pre-A6 runs have no tail_windows block at all."""
-    loaded = [_run("a"), _run("b")]
+def test_detect_aligned_window_dynamic_for_two_legacy_runs() -> None:
+    """Pre-A6 runs (no tail_windows) still get a dynamic window so
+    the comparison engine has SOME length-fair frame to work with."""
+    loaded = [_run("a", duration_s=1000.0), _run("b", duration_s=1000.0)]
+    label = detect_aligned_window(loaded)
+    assert label == "dynamic_1000s"
+
+
+def test_detect_aligned_window_returns_none_for_too_short_runs() -> None:
+    """v1.3.1: shortest run < 60 s floor → dynamic comparison is
+    meaningless, return None so the report says "no common frame"."""
+    loaded = [_run("a", duration_s=30.0), _run("b", duration_s=30.0)]
     assert detect_aligned_window(loaded) is None
 
 
@@ -251,14 +264,17 @@ def test_aligned_rankings_covers_all_score_metrics() -> None:
 
 # --- ATLT4407-vs-MORGANA case --------------------------------------
 
-def test_atlt4407_too_short_means_no_aligned_window() -> None:
-    """The exact v2 case: ATLT4407 is 902 s (no canonical tail window
-    fits) and MORGANA is 1469 s (last_1h fits). Cohort can't be aligned."""
+def test_atlt4407_short_run_now_gets_dynamic_window() -> None:
+    """v1.3.1: the v2 case (ATLT4407 902 s, MORGANA 1469 s) — neither
+    canonical window fits. v1.3.0 returned None (window_aligned_view
+    was empty); v1.3.1 falls back to a dynamic window of 900 s
+    (min(902, 1469) rounded down to 10 s) so the comparison report
+    finally has a length-fair frame to work with."""
     loaded = [
         _run("ATLT4407", tail_windows=[], duration_s=902.0),
         _run("MORGANA", tail_windows=[_tail_block("last_1h")], duration_s=1469.0),
     ]
-    assert detect_aligned_window(loaded) is None
+    assert detect_aligned_window(loaded) == "dynamic_900s"
 
 
 def test_two_runs_both_long_enough_for_1h_alignment() -> None:

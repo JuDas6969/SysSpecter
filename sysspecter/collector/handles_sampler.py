@@ -153,7 +153,7 @@ class _SYSTEM_HANDLE_INFORMATION_EX(Structure):
 
 # ---- public dataclass ---------------------------------------------------
 
-@dataclass
+@dataclass(slots=True)  # v1.3.1
 class HandleCount:
     """One row in `timeline_handles.csv`."""
     pid: int

@@ -32,7 +32,7 @@ def _read_established_count() -> int:
     return sum(1 for c in conns if c.status == psutil.CONN_ESTABLISHED)
 
 
-@dataclass
+@dataclass(slots=True)  # v1.3.1: drop __dict__ per instance
 class NetworkSample:
     timestamp: float
     rel_seconds: float

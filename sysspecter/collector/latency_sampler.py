@@ -30,7 +30,7 @@ _PS_FLAGS = [
 ]
 
 
-@dataclass
+@dataclass(slots=True)  # v1.3.1
 class LatencySample:
     timestamp: float
     rel_seconds: float

@@ -80,7 +80,7 @@ _HEAP_COUNTERS: dict[str, str] = {
 _PROCESS_PID_PATH = r"\.NET CLR Memory({inst})\Process ID"
 
 
-@dataclass
+@dataclass(slots=True)  # v1.3.1
 class ManagedHeapSample:
     """One row of managed-heap data for one .NET process."""
     pid: int

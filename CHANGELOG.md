@@ -6,6 +6,95 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-05-10
+
+Production-feedback patch on v1.3.0 — closes the four bugs surfaced
+on the live v1.3.0 score-card:
+
+### Fixed
+
+- **`window_aligned_view` always returned `no_data`** for cohorts
+  where every run was shorter than 1 hour. v1.3.0 only attempted
+  the canonical tail windows (`last_1h`, `last_8h`); when neither
+  fit, the fallback bailed before producing scores. v1.3.1 adds a
+  dynamic-window fallback (`dynamic_<n>s`) equal to the shortest
+  run's actual duration (rounded down to 10 s), so any cohort with
+  runs ≥ 60 s gets a length-fair frame. Score blocks for the
+  dynamic window are computed via a new `_compute_dynamic_window_block`
+  that filters `rd.system_rows` / `rd.latency_rows` to the window
+  and re-invokes `analyzer/scores.calculate_scores` — same formulas
+  as the per-run engine, no duplication.
+- **`peer_classes` returned `None` for off-domain workstations** —
+  the v1.3.0 personal-desktop fallback chain read `cpu.count`
+  (which doesn't exist; `static._cpu_info` produces
+  `cpu.logical_cores`) and `cpus[0].LogicalProcessors` (the WMI
+  field is `NumberOfLogicalProcessors`). Fixed both lookups in
+  `classify_from_static_snapshot` and `_peer_group_from_class`.
+  Plus a new "desktop-board OEM" rule (ASRock / MSI / Gigabyte /
+  EVGA on a non-laptop, off-domain host) that catches hobbyist /
+  workstation builds where the RAM/threads floor isn't reached.
+- **Verdict suppression checked only the winner's confidence** —
+  v1.3.0 marked `trusted=True` whenever the surviving (post-
+  exclusion) ranking was internally consistent. So after ATLT4407
+  was excluded for broken cadence, the MORGANA-only ranking was
+  "trusted" and `comparison_scores.json` published all 6 verdicts.
+  v1.3.1: `trusted=True` requires both (a) all surviving
+  participants healthy AND (b) zero exclusions. If anyone got
+  dropped due to broken cadence, the ranking is no longer
+  representative of the cohort and the verdict key is omitted.
+
+### Added (Suspect-4 leak mitigation)
+
+The v1.3.0 self-leak reduction was real (660 → 163 KB/sample on
+MORGANA, ~75 % reduction). The user's plan flagged the StreamingCSV
+buffer as the most likely residual source; a focused
+`tracemalloc` profile of the per-second hot loop showed the
+StreamingCSV instances themselves are bounded (~130 KB steady-
+state per writer, no growth). The remaining 163 KB/sample on
+MORGANA must come from broader paths (process_sampler enumeration,
+WMI calls, ETW buffers, GPU snapshots — only some of which were
+exercised in the user's runs). v1.3.1 ships defensive reductions
+across the board:
+
+- **`__slots__` on every per-sample dataclass** — `SystemSample`,
+  `ProcessSample`, `NetworkSample`, `LatencySample`, `HandleCount`,
+  `ManagedHeapSample`. Removes the ~80-byte per-instance `__dict__`.
+  On a 50-PID 1 Hz 8-h run that's ~5.7 MB saved on the process side
+  alone, plus reduced GC churn.
+- **Cached ctypes array type in `system_sampler._cpu_freq_via_ntpower`**
+  — v1.3.0 created a fresh `_PROCESSOR_POWER_INFORMATION * n_cpus`
+  array type AND instance on every call. Python doesn't dedupe
+  ctypes types by value, so each call leaked ctypes type metadata.
+  Module-level `_FREQ_BUF` / `_FREQ_BUF_SIZE` cache reuses the
+  same buffer for the lifetime of the process.
+
+### Tests
+
+10 new regression tests in `tests/test_v1_3_1_regression.py`:
+- dynamic-window fallback for `< 1 h` cohorts
+- floor at 60 s cohort duration
+- MORGANA personal-desktop classification via `logical_cores`
+- desktop-board-OEM rule for hobbyist builds
+- end-to-end pipeline through `extract_machine_classes`
+- verdict suppression when ANY participant excluded
+- verdict still published when all healthy
+- `__slots__` enforced on `SystemSample` (rejects unknown
+  attributes)
+- `__slots__` on every per-sample dataclass
+- ctypes `_FREQ_BUF` reuse across calls
+
+525 unit tests pass, ruff clean, bandit clean (0 medium / 0 high).
+
+### Note on the residual leak
+
+This release reduces allocation churn at the per-sample sites we
+could identify with a static + lean-trace audit. The dominant
+163 KB/sample observed on MORGANA needs a real-host
+`--profile-leak` run on the production hardware to fully localise
+— the test VM here couldn't reproduce the leak slope at scale. The
+flag is shipped in v1.3.0; running it on MORGANA for 15 minutes
+will produce a `leak_profile.txt` with the exact source lines.
+
 ## [1.3.0] — 2026-05-09
 
 Closes the v1.2 production-test review (self-leak + 8 quality bugs +
@@ -1094,7 +1183,8 @@ comparison tool, session splitter, and per-run HTML report.
 - Scoring heuristics are documented but not machine-learned; they are
   deliberately conservative and explainable rather than optimised.
 
-[Unreleased]: /compare/v1.3.0...HEAD
+[Unreleased]: /compare/v1.3.1...HEAD
+[1.3.1]: /releases/tag/v1.3.1
 [1.3.0]: /releases/tag/v1.3.0
 [1.2.1]: /releases/tag/v1.2.1
 [1.2.0]: /releases/tag/v1.2.0

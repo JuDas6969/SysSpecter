@@ -246,21 +246,43 @@ def classify_from_static_snapshot(
     # If the model is empty / unrecognised but we know it's NOT a
     # laptop AND it's not server: classify as personal-desktop when
     # the FQDN looks personal (e.g. just hostname with no domain).
+    # v1.3.1 fix: read the canonical static-snapshot keys
+    # (`logical_cores` set by static._cpu_info, `total_bytes` set by
+    # static._memory) — the v1.3.0 classifier looked for `count` and
+    # `LogicalProcessors` which don't exist, so MORGANA (off-domain
+    # ASRock workstation, 64 GB / 32 threads) returned None.
     if not is_laptop_form_factor and not fqdn_is_corporate:
-        # As a last-resort signal: machines with > 32 GB RAM and >= 16
-        # threads are typically workstations.
+        # As a last-resort signal: machines with >= 32 GB RAM AND
+        # >= 16 threads are typically workstations.
         try:
             ram_bytes = int((static.get("memory") or {}).get("total_bytes") or 0)
         except (TypeError, ValueError):
             ram_bytes = 0
         cpu_block = static.get("cpu") or {}
-        thread_count = (cpu_block.get("count")
-                        or (cpu_block.get("cpus") or [{}])[0].get("LogicalProcessors"))
+        # Canonical: static.cpu.logical_cores (psutil.cpu_count).
+        # Fallback chain handles Win32_Processor records or older
+        # snapshots that may have used different keys.
+        thread_count = (
+            cpu_block.get("logical_cores")
+            or cpu_block.get("count")  # legacy / test-fixture key
+            or (cpu_block.get("cpus") or [{}])[0].get("NumberOfLogicalProcessors")
+            or (cpu_block.get("cpus") or [{}])[0].get("LogicalProcessors")
+        )
         try:
             thread_count = int(thread_count or 0)
         except (TypeError, ValueError):
             thread_count = 0
         if ram_bytes >= 32 * 1024 ** 3 and thread_count >= 16:
+            return "personal-desktop"
+        # ASRock / MSI / Gigabyte / EVGA motherboards under desktop
+        # CPUs (Ryzen 9, Core i7/i9 etc.) are also workstations even
+        # when memory/threads don't quite hit the workstation floor.
+        # Manufacturer is one of the desktop-board OEMs → personal-desktop.
+        manufacturer = (cs.get("Manufacturer") or "").lower()
+        desktop_oem_markers = (
+            "asrock", "msi", "gigabyte", "evga", "asus motherboard",
+        )
+        if any(m in manufacturer for m in desktop_oem_markers):
             return "personal-desktop"
 
     return "unknown"
@@ -276,8 +298,13 @@ def _peer_group_from_class(
     static = static or {}
     ram_bytes = ((static.get("memory") or {}).get("total_bytes")) or 0
     cpu_block = static.get("cpu") or {}
+    # v1.3.1 fix: read static.cpu.logical_cores (psutil) before
+    # the WMI fallback. Same reason as the classifier above —
+    # `count` doesn't exist in real snapshots.
     thread_count = (
-        cpu_block.get("count")
+        cpu_block.get("logical_cores")
+        or cpu_block.get("count")
+        or (cpu_block.get("cpus") or [{}])[0].get("NumberOfLogicalProcessors")
         or (cpu_block.get("cpus") or [{}])[0].get("LogicalProcessors")
         or 0
     )

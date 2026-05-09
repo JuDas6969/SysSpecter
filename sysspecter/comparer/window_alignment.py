@@ -54,12 +54,29 @@ def _tail_blocks(scores: dict[str, Any]) -> list[dict[str, Any]]:
     return list(scores.get("tail_windows") or [])
 
 
+# v1.3.1: dynamic-window label prefix. When the canonical tail
+# windows (last_1h / last_8h) don't fit because all runs are short,
+# we fall back to a dynamic window equal to the SHORTEST run's
+# duration. The label is `dynamic_<seconds>s` so consumers can tell
+# it apart from a canonical window. The fresh-compute path then
+# produces aligned scores for every run by truncating to that window.
+_DYNAMIC_WINDOW_PREFIX = "dynamic_"
+_DYNAMIC_WINDOW_MIN_SECONDS = 60.0  # below this, even comparison is meaningless
+
+
 def detect_aligned_window(loaded: list[dict[str, Any]]) -> str | None:
     """Pick the widest tail window every loaded run can produce.
 
-    Returns the window label (e.g. `"last_1h"`) or None when at
-    least one run is too short. Single source of truth so the
-    matrix, rankings and report all agree on the comparison frame.
+    v1.3.1: when canonical tail windows (last_8h / last_1h) don't fit
+    because all input runs are < 1 h, fall back to a dynamic window
+    equal to the SHORTEST run's actual duration. Returns:
+
+      - `"last_8h"` / `"last_1h"` — canonical tail window labels;
+        every input run already has the pre-computed scores block.
+      - `"dynamic_<seconds>s"` — derived from min(actual_duration);
+        scores are computed fresh by `_compute_window_score_from_raw`.
+      - None — fewer than 2 input runs, or shortest run is below
+        the 60 s floor (comparison meaningless).
     """
     if len(loaded) < 2:
         return None
@@ -70,7 +87,26 @@ def detect_aligned_window(loaded: list[dict[str, Any]]) -> str | None:
             for s in score_blocks
         ):
             return label
-    return None
+    # v1.3.1: dynamic window fallback. min(durations) gives the
+    # widest window every run can produce. Round DOWN to the nearest
+    # 10 s so two runs of 902 s and 1469 s don't generate three
+    # separate labels (902 / 900 / 1469 etc.) on different snapshots.
+    durations: list[float] = []
+    for r in loaded:
+        d = (r.get("manifest") or {}).get("duration_actual_seconds")
+        try:
+            d = float(d) if d is not None else 0.0
+        except (TypeError, ValueError):
+            d = 0.0
+        if d > 0:
+            durations.append(d)
+    if len(durations) < len(loaded):
+        return None  # at least one run reports no duration
+    win_seconds = min(durations)
+    if win_seconds < _DYNAMIC_WINDOW_MIN_SECONDS:
+        return None
+    win_seconds = int(win_seconds // 10) * 10  # round down to 10 s
+    return f"{_DYNAMIC_WINDOW_PREFIX}{win_seconds}s"
 
 
 def aligned_score(
@@ -123,18 +159,38 @@ _WINDOW_SECONDS: dict[str, float] = {
 }
 
 
+def _window_label_seconds(window_label: str | None) -> float | None:
+    """Resolve a window label to a duration in seconds. Handles the
+    canonical labels (`last_1h`, `last_8h`) and v1.3.1 dynamic labels
+    (`dynamic_<n>s`)."""
+    if window_label is None:
+        return None
+    if window_label in _WINDOW_SECONDS:
+        return _WINDOW_SECONDS[window_label]
+    if window_label.startswith(_DYNAMIC_WINDOW_PREFIX):
+        try:
+            tail = window_label[len(_DYNAMIC_WINDOW_PREFIX):]
+            if tail.endswith("s"):
+                tail = tail[:-1]
+            return float(tail)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _compute_window_score_from_raw(
     r: dict[str, Any], window_label: str,
 ) -> dict[str, Any] | None:
-    """v1.3.0 B.3: when a run's `scores.tail_windows` doesn't include
-    the requested window, re-compute it from the raw timeline +
-    findings. Returns the same shape as a pre-computed tail-window
-    block (so the caller treats both paths identically), or None when
-    the run doesn't have enough data.
+    """When a run's `scores.tail_windows` doesn't include the requested
+    window, re-compute it from the raw timeline + findings.
 
-    Re-uses `analyzer/scores.compute_tail_window_scores` so the
-    formulas are byte-identical to the per-run path. No duplicated
-    score logic.
+    v1.3.1: also handles dynamic-window labels (`dynamic_<n>s`) by
+    invoking `analyzer/scores.calculate_scores` directly on a
+    rel-seconds-filtered slice.
+
+    Returns the same shape as a pre-computed tail-window block (so
+    the caller treats both paths identically), or None when the run
+    doesn't have enough data.
     """
     rd = r.get("rd")
     findings = r.get("findings") or {}
@@ -156,27 +212,121 @@ def _compute_window_score_from_raw(
             duration = float(system_rows[-1].get("rel_seconds") or 0.0)
         except (TypeError, ValueError):
             duration = 0.0
-    if duration < _WINDOW_SECONDS.get(window_label, 1e9):
+    win_seconds = _window_label_seconds(window_label)
+    if win_seconds is None:
         return None
+    if duration < win_seconds:
+        return None
+    # Canonical labels: re-use compute_tail_window_scores which
+    # produces a list of canonical blocks. Dynamic labels: build the
+    # block ourselves via calculate_scores on a windowed slice.
+    if window_label in _WINDOW_SECONDS:
+        try:
+            from ..analyzer.scores import compute_tail_window_scores
+        except ImportError:
+            return None
+        blocks = compute_tail_window_scores(
+            system_rows,
+            findings.get("anomalies") or [],
+            findings.get("slowdowns") or [],
+            findings.get("offenders") or {},
+            findings.get("leaks") or {},
+            latency_rows,
+            manifest.get("mode") or "support",
+            findings.get("bottlenecks") or {},
+            full_window_start=0.0,
+            full_window_end=duration,
+        )
+        for block in blocks:
+            if block.get("window_label") == window_label:
+                return block
+        return None
+
+    # v1.3.1 dynamic window: slice the timeline to the LAST
+    # `win_seconds` of the run, recompute scores there. We use the
+    # *tail* (last N seconds) so each run's score reflects its
+    # most-recent steady state, not its startup transient.
+    return _compute_dynamic_window_block(
+        window_label, win_seconds, duration,
+        system_rows=system_rows,
+        latency_rows=latency_rows,
+        anomalies=findings.get("anomalies") or [],
+        slowdowns=findings.get("slowdowns") or [],
+        offenders=findings.get("offenders") or {},
+        leaks=findings.get("leaks") or {},
+        mode=manifest.get("mode") or "support",
+        bottlenecks=findings.get("bottlenecks") or {},
+    )
+
+
+def _compute_dynamic_window_block(
+    window_label: str,
+    win_seconds: float,
+    duration: float,
+    *,
+    system_rows: list[dict[str, Any]],
+    latency_rows: list[dict[str, Any]],
+    anomalies: list[dict[str, Any]],
+    slowdowns: list[dict[str, Any]],
+    offenders: dict[str, Any],
+    leaks: dict[str, Any],
+    mode: str,
+    bottlenecks: dict[str, Any],
+) -> dict[str, Any] | None:
+    """v1.3.1: produce a score block for a dynamic window covering
+    the LAST `win_seconds` of the run. Mirrors the shape of an
+    `analyzer/scores.compute_tail_window_scores` entry so the rest
+    of `build_aligned_view` consumes both paths identically."""
     try:
-        from ..analyzer.scores import compute_tail_window_scores
+        from ..analyzer.scores import calculate_scores
     except ImportError:
         return None
-    blocks = compute_tail_window_scores(
-        system_rows,
-        findings.get("anomalies") or [],
-        findings.get("slowdowns") or [],
-        findings.get("offenders") or {},
-        findings.get("leaks") or {},
-        latency_rows,
-        manifest.get("mode") or "support",
-        findings.get("bottlenecks") or {},
-        full_window_start=0.0,
-        full_window_end=duration,
+    lo = max(0.0, duration - win_seconds)
+    hi = duration
+
+    def _filter(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                rel = float(row.get("rel_seconds") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if lo <= rel <= hi:
+                out.append(row)
+        return out
+
+    win_system = _filter(system_rows)
+    if len(win_system) < 5:
+        return None
+    win_latency = _filter(latency_rows)
+    win_anoms = [
+        a for a in anomalies
+        if lo <= (_first_float(a, "rel_seconds", "start_rel_seconds") or 0.0) <= hi
+    ]
+    win_slowdowns = [
+        sd for sd in slowdowns
+        if (_first_float(sd, "end_rel_seconds", "rel_seconds") or 0.0) >= lo
+    ]
+    s = calculate_scores(
+        win_system, win_anoms, win_slowdowns,
+        offenders, leaks, win_latency, mode, bottlenecks,
     )
-    for block in blocks:
-        if block.get("window_label") == window_label:
-            return block
+    s["window_label"] = window_label
+    s["window_start_seconds"] = round(lo, 2)
+    s["window_end_seconds"] = round(hi, 2)
+    s["window_duration_seconds"] = round(hi - lo, 2)
+    s["window_samples"] = len(win_system)
+    return s
+
+
+def _first_float(d: dict[str, Any], *keys: str) -> float | None:
+    for k in keys:
+        v = d.get(k)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
     return None
 
 
@@ -262,7 +412,8 @@ def build_aligned_view(
             #   `no_data`   — pre-A6 / pre-v1.3 run with no tail_windows
             #                  AND no usable timeline (rd absent).
             rd = r.get("rd")
-            window_len = _WINDOW_SECONDS.get(window_label, 0)
+            # v1.3.1: window length lookup now handles dynamic labels.
+            window_len = _window_label_seconds(window_label) or 0
             try:
                 actual_f = float(actual)
             except (TypeError, ValueError):
@@ -325,12 +476,50 @@ def build_aligned_view(
     }
 
 
+def _resolve_aligned_block(
+    r: dict[str, Any], window_label: str,
+) -> dict[str, Any] | None:
+    """Get the score block for `window_label` for one run — either
+    from pre-computed `scores.tail_windows` or by re-computing from
+    raw timeline (v1.3.0 B.3 / v1.3.1 dynamic-window path)."""
+    s = r.get("scores") or {}
+    block = next(
+        (tw for tw in _tail_blocks(s)
+         if tw.get("window_label") == window_label),
+        None,
+    )
+    if block is None:
+        block = _compute_window_score_from_raw(r, window_label)
+    return block
+
+
+def _block_score(block: dict[str, Any] | None, key: str) -> float | None:
+    if not isinstance(block, dict):
+        return None
+    v = block.get(key)
+    if isinstance(v, dict):
+        v = v.get("score")
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def aligned_rankings(
     loaded: list[dict[str, Any]],
     window_label: str | None,
 ) -> dict[str, list[tuple[str, float]]]:
     """Build the same set of rankings the matrix already produces,
     but using aligned-window scores instead of full-window ones.
+
+    v1.3.1: now also populates rankings for dynamic-window labels
+    (`dynamic_<n>s`) by computing scores fresh per run via
+    `_compute_window_score_from_raw`. Previously this path returned
+    None for dynamic labels because it only consulted pre-computed
+    `tail_windows`, so window_aligned_view was effectively unused
+    when both runs were < 1 hour.
 
     Returns empty dict when no aligned window — caller falls back to
     the raw rankings.
@@ -346,11 +535,16 @@ def aligned_rankings(
         "best_hygiene": "resource_hygiene",
     }
     out: dict[str, list[tuple[str, float]]] = {}
+    # Resolve each run's block ONCE (so we don't re-compute on every
+    # metric) — fresh-compute can be expensive on long timelines.
+    blocks: list[tuple[str, dict[str, Any] | None]] = []
+    for r in loaded:
+        run_id = (r.get("manifest") or {}).get("run_id") or "?"
+        blocks.append((run_id, _resolve_aligned_block(r, window_label)))
     for ranking_name, score_key in metric_to_key.items():
         pairs: list[tuple[str, float]] = []
-        for r in loaded:
-            run_id = (r.get("manifest") or {}).get("run_id") or "?"
-            v = aligned_score(r.get("scores") or {}, window_label, score_key)
+        for run_id, block in blocks:
+            v = _block_score(block, score_key)
             if v is None:
                 continue
             pairs.append((run_id, v))
