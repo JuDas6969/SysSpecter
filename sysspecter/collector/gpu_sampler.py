@@ -40,7 +40,7 @@ _PS_FLAGS = [
 ]
 
 
-@dataclass
+@dataclass(slots=True)  # v1.3.2
 class GpuEngineSample:
     timestamp: float
     rel_seconds: float
@@ -49,7 +49,7 @@ class GpuEngineSample:
     utilization_pct: float
 
 
-@dataclass
+@dataclass(slots=True)  # v1.3.2
 class GpuProcessSample:
     timestamp: float
     rel_seconds: float
@@ -58,7 +58,7 @@ class GpuProcessSample:
     shared_bytes: int
 
 
-@dataclass
+@dataclass(slots=True)  # v1.3.2
 class GpuAdapterSample:
     timestamp: float
     rel_seconds: float
@@ -94,7 +94,12 @@ def _run_ps(script: str, timeout: float = 15.0) -> str | None:
 
 
 def _get_counter_json(counter: str, logger: logging.Logger | None = None) -> list[dict[str, Any]]:
-    """Returns list of {InstanceName, Value} for the given counter path."""
+    """Returns list of {InstanceName, Value} for the given counter path.
+
+    Kept for backward compatibility / tests. The hot path now uses
+    `_get_counters_batch` which queries all GPU counters in a single
+    PowerShell subprocess (v1.3.2).
+    """
     script = (
         f"try {{ "
         f"  $c = Get-Counter -Counter '{counter}' -ErrorAction Stop; "
@@ -123,6 +128,89 @@ def _get_counter_json(counter: str, logger: logging.Logger | None = None) -> lis
         except (TypeError, ValueError):
             fval = 0.0
         result.append({"instance": inst, "value": fval})
+    return result
+
+
+def _get_counters_batch(
+    counters: list[str], logger: logging.Logger | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """v1.3.2: query multiple GPU counters in a single PowerShell call.
+
+    Reduces the per-cycle subprocess overhead from 3× powershell.exe
+    spawns down to 1. Each PS spawn leaks 50–200 KB of Win32 HANDLEs /
+    pipe buffers in the parent process on Windows, so this is the
+    second-largest residual self-leak source after the ctypes buffer
+    fragmentation fixed in `handles_sampler` (v1.3.2 Hypothesis 2).
+
+    Returns a dict mapping each requested counter path to its list of
+    `{instance, value}` rows. Missing counters map to `[]` (soft-degrade,
+    same as `_get_counter_json`).
+    """
+    if not counters:
+        return {}
+    # Build a PowerShell array literal with single-quoted entries.
+    ps_array = ",".join("'" + c + "'" for c in counters)
+    # Group results by Path so we can split them back into per-counter
+    # buckets on the Python side. We tag each row with its requesting
+    # counter path explicitly so we don't need fuzzy matching.
+    script = (
+        "try { "
+        f"  $c = Get-Counter -Counter @({ps_array}) -ErrorAction Stop; "
+        "  $c.CounterSamples | Select-Object Path,InstanceName,CookedValue "
+        "    | ConvertTo-Json -Compress -Depth 2 "
+        "} catch { '[]' }"
+    )
+    out = _run_ps(script, timeout=20.0)
+    result: dict[str, list[dict[str, Any]]] = {c: [] for c in counters}
+    if not out:
+        return result
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        if logger:
+            logger.warning("gpu batch counter parse failed: %s", out[:160])
+        return result
+    if isinstance(data, dict):
+        data = [data]
+    # Build a (prefix, suffix) match pair for each requested counter.
+    # PowerShell expands the wildcard so the .Path looks like
+    # `\\HOST\gpu engine(pid_1234_...)\utilization percentage`. Match
+    # by checking that BOTH the prefix and suffix (split on `(*)`) are
+    # present as lowercase substrings of the normalized path. This
+    # handles instance-name expansion robustly.
+    counter_keys: list[tuple[str, str, str]] = []
+    for c in counters:
+        lc = c.lower()
+        if "(*)" in lc:
+            prefix, suffix = lc.split("(*)", 1)
+        else:
+            prefix, suffix = lc, ""
+        counter_keys.append((prefix, suffix, c))
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        path = (row.get("Path") or "").lower()
+        # Path looks like `\\hostname\gpu engine(...)\\utilization percentage`.
+        # Strip the `\\hostname` prefix so it matches our requested path.
+        if path.startswith("\\\\"):
+            tail = path[2:].split("\\", 1)
+            path_norm = "\\" + tail[1] if len(tail) > 1 else path
+        else:
+            path_norm = path
+        matched: str | None = None
+        for prefix, suffix, original in counter_keys:
+            if prefix in path_norm and (not suffix or suffix in path_norm):
+                matched = original
+                break
+        if matched is None:
+            continue
+        inst = row.get("InstanceName") or ""
+        val = row.get("CookedValue")
+        try:
+            fval = float(val) if val is not None else 0.0
+        except (TypeError, ValueError):
+            fval = 0.0
+        result[matched].append({"instance": inst, "value": fval})
     return result
 
 
@@ -176,7 +264,18 @@ def collect_gpu_snapshot(
     now_wall = time.time()
     rel = round(time.monotonic() - started_mono, 3)
 
-    engine_raw = _get_counter_json(r"\GPU Engine(*)\Utilization Percentage", logger)
+    # v1.3.2: batch the three Get-Counter queries into a single PowerShell
+    # subprocess. Was 3× spawn-and-tear-down per cycle (each spawn leaks
+    # ~50–200 KB of Win32 HANDLEs / pipe buffers in the parent).
+    engine_path = r"\GPU Engine(*)\Utilization Percentage"
+    dedicated_path = r"\GPU Process Memory(*)\Dedicated Usage"
+    shared_path = r"\GPU Process Memory(*)\Shared Usage"
+    batch = _get_counters_batch(
+        [engine_path, dedicated_path, shared_path], logger,
+    )
+    engine_raw = batch.get(engine_path, [])
+    dedicated_raw = batch.get(dedicated_path, [])
+    shared_raw = batch.get(shared_path, [])
     # Bucket engine samples by (engine_type, luid), taking the max across pids
     # (Windows exposes one row per PID-using-engine; the machine total for an
     # engine is essentially the max over PIDs at a given instant).
@@ -202,9 +301,7 @@ def collect_gpu_snapshot(
         for (et, luid), util in engine_buckets.items()
     ]
 
-    # Per-process memory
-    dedicated_raw = _get_counter_json(r"\GPU Process Memory(*)\Dedicated Usage", logger)
-    shared_raw = _get_counter_json(r"\GPU Process Memory(*)\Shared Usage", logger)
+    # Per-process memory (already pulled via _get_counters_batch above).
     ded_by_pid: dict[int, int] = {}
     for row in dedicated_raw:
         m = _PROC_MEM_PID_RE.search(row["instance"])

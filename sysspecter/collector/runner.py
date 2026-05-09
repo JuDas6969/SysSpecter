@@ -141,12 +141,45 @@ _PRIORITY_CLASSES: dict[int, str] = {
 }
 
 
+def _set_thread_priority_time_critical(kernel32, logger) -> bool:
+    """v1.3.2: thread-level priority fallback for locked-down corporate
+    hosts where SetPriorityClass is denied (AppLocker / BeyondTrust
+    EPM). SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)
+    is usually allowed because it raises only the calling thread within
+    the existing process priority class — no cross-process scheduling
+    impact, so EPM rules tend not to block it.
+
+    THREAD_PRIORITY_TIME_CRITICAL = 15.
+
+    Returns True iff the call succeeded.
+    """
+    try:
+        thread_handle = kernel32.GetCurrentThread()
+        ok = kernel32.SetThreadPriority(thread_handle, 15)
+        if ok:
+            logger.info("thread priority set to TIME_CRITICAL (process-level refused)")
+            return True
+        logger.warning("SetThreadPriority(TIME_CRITICAL) refused")
+        return False
+    except Exception as e:
+        logger.warning("could not set thread priority: %s", e)
+        return False
+
+
 def _set_high_priority_class(logger) -> str:
     """Bump our own process to HIGH_PRIORITY_CLASS on Windows.
 
-    Returns the priority-class name actually achieved (one of
-    "HIGH", "ABOVE_NORMAL", "NORMAL", "UNCHANGED") so the runner can
-    record it in the manifest. Never raises.
+    Returns the priority-class name actually achieved. Possible values:
+
+    - "HIGH"          — SetPriorityClass(HIGH) succeeded
+    - "ABOVE_NORMAL"  — SetPriorityClass fell back, ABOVE_NORMAL allowed
+    - "THREAD_TIME_CRITICAL" — process-level refused, thread-level
+      TIME_CRITICAL succeeded (v1.3.2 fallback for locked-down corporate
+      hosts where AppLocker / EPM denies SetPriorityClass)
+    - "NORMAL"        — both process and thread bumps refused
+    - "UNCHANGED"     — non-Windows platform, or kernel32 unavailable
+
+    Never raises.
     """
     if sys.platform != "win32":
         return "UNCHANGED"
@@ -163,7 +196,12 @@ def _set_high_priority_class(logger) -> str:
             if ok:
                 logger.info("process priority class set to %s", cls_name)
                 return cls_name
-        logger.warning("SetPriorityClass refused both HIGH and ABOVE_NORMAL")
+        logger.warning(
+            "SetPriorityClass refused both HIGH and ABOVE_NORMAL — "
+            "trying thread-level TIME_CRITICAL fallback"
+        )
+        if _set_thread_priority_time_critical(kernel32, logger):
+            return "THREAD_TIME_CRITICAL"
         return "NORMAL"
     except Exception as e:
         logger.warning("could not set priority class: %s", e)

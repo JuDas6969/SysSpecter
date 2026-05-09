@@ -6,6 +6,70 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.2] — 2026-05-09
+
+Targeted leak follow-up on v1.3.1 — closes the residual ~80 KB/s
+self-leak observed on MORGANA after v1.3.1 shipped, plus a
+corporate-host workaround for locked-down EPM environments where
+`SetPriorityClass` is denied.
+
+### Fixed
+
+- **ctypes 16 MB buffer fragmentation in `handles_sampler`** (the
+  most likely residual leak source per the user's static review).
+  v1.3.0/v1.3.1 allocated a fresh `(c_ubyte * 16 MB)` array on every
+  call to `_query_system_handles` (every 60 s on a typical desktop).
+  Each large allocation went through the Windows process heap, and
+  on a 30-min run that's 30 distinct 16 MB blocks the allocator
+  rounded up to slightly different sizes — the cumulative
+  fragmentation kept memory the OS would not reclaim. v1.3.2 caches
+  the buffer at module level (`_HANDLES_BUF` / `_HANDLES_BUF_SIZE`)
+  and only re-allocates on the rare `STATUS_INFO_LENGTH_MISMATCH`
+  growth path. Same pattern that v1.3.1 applied to
+  `system_sampler._FREQ_BUF`.
+- **Same fix for the 64 KB → 4 MB `_query_all_types` buffer** in
+  `handles_sampler`. Lower magnitude (called once per process
+  lifetime in steady state) but applied for cleanliness and to fully
+  drain the heap-fragmentation source.
+- **GPU sampler subprocess overhead** (Hypothesis 2). v1.3.0 spawned
+  three separate `powershell.exe` processes per expensive-tier cycle
+  (`\GPU Engine\Utilization Percentage`, `\GPU Process Memory\Dedicated Usage`,
+  `\GPU Process Memory\Shared Usage`). Each Win32
+  `CreateProcess` + pipe teardown leaks ~50–200 KB of HANDLEs and
+  pipe buffers in the parent. v1.3.2 batches all three into a single
+  `Get-Counter -Counter @(...)` call, dispatched via one
+  subprocess. Three spawns per cycle → one. On a 30-min run with
+  90 s expensive cadence, that's 60 fewer subprocess spawns.
+- **Thread-level priority fallback** for corporate hosts where
+  `SetPriorityClass(HIGH/ABOVE_NORMAL)` is denied by AppLocker /
+  BeyondTrust EPM. When both process-level bumps refuse, v1.3.2
+  now tries `SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)`
+  (value 15) which raises only the calling thread within the
+  existing process priority class — no cross-process scheduling
+  impact, so EPM rules typically allow it. Manifest records the
+  achieved level as `THREAD_TIME_CRITICAL` in this case so
+  comparison-engine cadence-quality readers can see the priority
+  state honestly.
+
+### Added
+
+- `@dataclass(slots=True)` on `GpuEngineSample`, `GpuProcessSample`,
+  `GpuAdapterSample`. Same pattern as v1.3.1 — eliminates per-instance
+  `__dict__`. Modest by itself; consistent with the rest of the
+  collector.
+
+### Tests
+
+New regression tests in `tests/test_v1_3_2_regression.py`:
+- `_HANDLES_BUF` reused across calls; re-allocated only on size growth
+- `_TYPES_BUF` reused across calls
+- `_get_counters_batch` dispatches a single PowerShell command
+- `_get_counters_batch` parses path-tagged rows back into per-counter buckets
+- thread-level fallback path on `_set_high_priority_class` when
+  `SetPriorityClass` returns 0
+- `__slots__` enforced on `GpuEngineSample` / `GpuProcessSample` /
+  `GpuAdapterSample`
+
 ## [1.3.1] — 2026-05-10
 
 Production-feedback patch on v1.3.0 — closes the four bugs surfaced

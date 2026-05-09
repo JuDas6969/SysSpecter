@@ -165,6 +165,24 @@ class HandleCount:
 
 _type_index_to_name: dict[int, str] | None = None
 
+# v1.3.2: module-level cache for the giant ctypes buffer used by
+# `_query_system_handles`. The v1.3.0/v1.3.1 path allocated a fresh
+# 16 MB ctypes array per call (every 60 s on a typical desktop), which
+# fragments the Windows process heap and is the most likely residual
+# self-leak source after the v1.3.0 streaming-events fix. Reuse a
+# single buffer for the lifetime of the process; only re-allocate on
+# the (very rare) STATUS_INFO_LENGTH_MISMATCH growth path.
+_HANDLES_BUF: ctypes.Array | None = None
+_HANDLES_BUF_SIZE: int = 0
+
+# v1.3.2: same treatment for the smaller ObjectAllTypes buffer.
+# Magnitude is modest (64 KB → 4 MB) but the call still happens once
+# per process lifetime in steady state and once per buffer-grow on
+# resolution failure. Cache it for cleanliness even if it's not the
+# dominant leak.
+_TYPES_BUF: ctypes.Array | None = None
+_TYPES_BUF_SIZE: int = 0
+
 
 def _is_windows() -> bool:
     return sys.platform == "win32"
@@ -186,15 +204,20 @@ def _query_all_types() -> dict[int, str]:
     surface numeric indices instead of names if this fails — still
     useful, just less readable.
     """
+    global _TYPES_BUF, _TYPES_BUF_SIZE
     nt = _ntdll()
     if nt is None:
         return {}
 
     # Try expanding buffer sizes — start at 64 KB which fits all known
-    # Windows builds, double until 4 MB.
-    buf_size = 64 * 1024
+    # Windows builds, double until 4 MB. v1.3.2: reuse a module-level
+    # cached array so steady-state callers don't fragment the heap.
+    buf_size = _TYPES_BUF_SIZE if _TYPES_BUF is not None else 64 * 1024
     while buf_size <= 4 * 1024 * 1024:
-        buf = (ctypes.c_ubyte * buf_size)()
+        if _TYPES_BUF is None or _TYPES_BUF_SIZE != buf_size:
+            _TYPES_BUF = (ctypes.c_ubyte * buf_size)()
+            _TYPES_BUF_SIZE = buf_size
+        buf = _TYPES_BUF
         ret_len = ULONG(0)
         try:
             status = nt.NtQueryObject(
@@ -208,6 +231,9 @@ def _query_all_types() -> dict[int, str]:
             return {}
         if status == _STATUS_INFO_LENGTH_MISMATCH:
             buf_size *= 2
+            # Force a re-allocation for the next loop iteration.
+            _TYPES_BUF = None
+            _TYPES_BUF_SIZE = 0
             continue
         if status != _STATUS_SUCCESS:
             _log.debug("NtQueryObject(ObjectAllTypes) status=0x%08x", status & 0xFFFFFFFF)
@@ -262,9 +288,16 @@ def _resolve_type_name(idx: int) -> str:
 
 def reset_type_cache() -> None:
     """For tests — discard the cached index→name map so a fresh
-    NtQueryObject call happens on next access."""
-    global _type_index_to_name
+    NtQueryObject call happens on next access. Also drops the module-
+    level ctypes buffer caches added in v1.3.2 so tests can verify
+    re-allocation on size growth."""
+    global _type_index_to_name, _HANDLES_BUF, _HANDLES_BUF_SIZE
+    global _TYPES_BUF, _TYPES_BUF_SIZE
     _type_index_to_name = None
+    _HANDLES_BUF = None
+    _HANDLES_BUF_SIZE = 0
+    _TYPES_BUF = None
+    _TYPES_BUF_SIZE = 0
 
 
 # ---- collection --------------------------------------------------------
@@ -273,16 +306,26 @@ def _query_system_handles() -> bytes:
     """Return the raw SystemExtendedHandleInformation buffer.
 
     Empty bytes on any failure path. Caller must handle that.
+
+    v1.3.2: reuse a module-level cached 16 MB ctypes array. The v1.3.0
+    / v1.3.1 path allocated a fresh array per call (every 60 s on a
+    typical desktop), which is the most likely residual self-leak
+    source — large repeated allocations fragment the Windows process
+    heap so HeapFree never returns memory to the OS.
     """
+    global _HANDLES_BUF, _HANDLES_BUF_SIZE
     nt = _ntdll()
     if nt is None:
         return b""
 
     # Start at 16 MB which fits a desktop with up to ~700 k handles.
     # Double up to 256 MB ceiling.
-    buf_size = 16 * 1024 * 1024
+    buf_size = _HANDLES_BUF_SIZE if _HANDLES_BUF is not None else 16 * 1024 * 1024
     while buf_size <= _MAX_BUFFER_BYTES:
-        buf = (ctypes.c_ubyte * buf_size)()
+        if _HANDLES_BUF is None or _HANDLES_BUF_SIZE != buf_size:
+            _HANDLES_BUF = (ctypes.c_ubyte * buf_size)()
+            _HANDLES_BUF_SIZE = buf_size
+        buf = _HANDLES_BUF
         ret_len = ULONG(0)
         try:
             status = nt.NtQuerySystemInformation(
@@ -295,12 +338,16 @@ def _query_system_handles() -> bytes:
             return b""
         if status in (_STATUS_INFO_LENGTH_MISMATCH, _STATUS_BUFFER_OVERFLOW):
             buf_size *= 2
+            # Force a re-allocation for the next loop iteration.
+            _HANDLES_BUF = None
+            _HANDLES_BUF_SIZE = 0
             continue
         if status != _STATUS_SUCCESS:
             _log.debug("NtQuerySystemInformation status=0x%08x", status & 0xFFFFFFFF)
             return b""
         # Snapshot the relevant prefix into immutable bytes so the
-        # caller can release the (potentially huge) ctypes buffer.
+        # caller can release the cached ctypes buffer reference cleanly
+        # (the cached buffer itself stays alive at module scope).
         used = ret_len.value or buf_size
         return bytes(buf[:used])
     _log.debug("NtQuerySystemInformation buffer kept growing past %d bytes; aborting",
