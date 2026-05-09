@@ -6,6 +6,74 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (v3-priority-6: cap-window-aware comparison alignment — A6)
+
+The v2 production review made this priority urgent: the comparison
+engine consumes raw scores computed over each run's full window.
+ATLT4407 (902 s) vs MORGANA (1469 s) gave MORGANA a free advantage
+on every "average over time" metric — it integrated over a 62 %
+longer window. Any verdict like *"MORGANA is more efficient"* was
+biased by length before it reflected behaviour.
+
+The fix in v1.1.0 shipped per-run tail-window scores
+(`last_1h` / `last_8h` via `analyzer/scores.compute_tail_window_scores`)
+but the comparison engine never used them. This release closes that
+loop:
+
+- **New `comparer/window_alignment.py`** module with four primitives:
+  - `detect_aligned_window(loaded)` — picks the widest tail window
+    every loaded run can produce (`last_8h` preferred over `last_1h`),
+    returns `None` when at least one run is too short.
+  - `aligned_score(scores, window_label, key)` — single-cell lookup
+    handling both flat (`overall`) and nested-with-`.score`
+    (`stability.score`) shapes.
+  - `build_aligned_view(loaded, window_label)` — per-run rows at the
+    aligned window with explicit `alignment_status`
+    (`aligned` / `too_short` / `no_data`) so the report can
+    distinguish "ran but not long enough" from "legacy pre-A6 run".
+  - `aligned_rankings(loaded, window_label)` — parallel rankings
+    (`best_overall`, `best_stability`, etc.) computed against the
+    aligned window. Skips runs that don't have it, returns empty
+    dict when no common window exists so callers fall back cleanly.
+
+- **Headline-verdict order of preference** in `compare_runs.py`:
+  1. **Aligned-window ranking** (this priority) — length-fair.
+  2. **Cadence-annotated raw ranking** (priority 2) — excludes
+     broken-cadence runs from sample-density-sensitive metrics.
+
+  This prevents ATLT4407 from winning "best efficiency" purely
+  because its 902 s run integrated over a shorter window. The
+  `comparison_scores.json` headline now also carries
+  `chosen_window: "last_1h" | "last_8h" | "full_run"` so consumers
+  can immediately see which frame the verdict was computed on.
+
+- **`comparison_findings.json` gains** `window_aligned_view` (the
+  per-run scores at the aligned window, mirrored from `cross_run_view`
+  but enriched with per-row `alignment_status`) and
+  `window_aligned_rankings` (the rankings used for headline verdicts).
+
+- **HTML + Markdown reports** gain a "Cap-window-aligned scoring"
+  banner above the verdicts:
+  - **Aligned**: green `length-fair` pill + the chosen window label.
+    Verdict pills also carry the chosen window (e.g. `on last_1h`).
+  - **Unavailable**: amber banner explaining at least one run is
+    shorter than 1 h, with an explicit "treat headline rankings as
+    length-influenced" caveat.
+
+  Plus a **per-run scoring table at the aligned window** showing
+  status pill (`aligned` / `too short` / `no data`), the six score
+  columns, and sample count in the window.
+
+- 19 new unit tests pinning: widest-common-window selection (`last_8h`
+  preferred over `last_1h`, falls back when only some runs have it);
+  the ATLT4407-too-short pattern (no alignment possible); legacy
+  back-compat (pre-A6 runs surface as `no_data`); aligned rankings
+  prefer window scores over full-run; rankings skip runs missing the
+  window; sub-score (`.score`) shape resolution; per-run
+  `alignment_status` distinguishes `too_short` from `no_data`.
+
+474 tests pass (was 455, +19 new), ruff clean, bandit clean.
+
 ### Added (v3-priority-5: .NET CLR managed-heap counters — H2)
 
 The second-most-impactful missing-data item from the v3 plan. Without

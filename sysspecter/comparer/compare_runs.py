@@ -22,6 +22,11 @@ from .matrix import build_matrix, write_matrix_csv
 from .mode import detect_mode, mode_label
 from .peer_context import build_peer_mismatch_findings, extract_machine_classes
 from .static_diff import diff_autoruns, diff_config, diff_hardware, diff_software
+from .window_alignment import (
+    aligned_rankings,
+    build_aligned_view,
+    detect_aligned_window,
+)
 
 
 def _explain_differences(runs: list[dict[str, Any]], matrix: dict[str, Any]) -> list[dict[str, Any]]:
@@ -145,6 +150,36 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         logger.warning("peer-context finding: [%s] %s",
                        first.get("kind"), first.get("hypothesis"))
 
+    # v3-priority-6: cap-window alignment. ATLT4407 (902 s) vs
+    # MORGANA (1469 s) gives MORGANA an intrinsic advantage on every
+    # "average over time" metric. When all runs can produce a
+    # canonical tail window (last_1h / last_8h via A6), prefer those
+    # scores in the headline verdicts so length is no longer a free
+    # variable. When no common window exists (some run too short),
+    # fall back to raw rankings — the cadence-quality and
+    # peer-context layers (priorities 1-3) still apply.
+    aligned_window = detect_aligned_window(loaded)
+    aligned_view = build_aligned_view(loaded, aligned_window)
+    aligned_ranks = aligned_rankings(loaded, aligned_window)
+    if aligned_window:
+        logger.info(
+            "cross-run aligned window: %s — using cap-window-aware scoring "
+            "for headline verdicts",
+            aligned_window,
+        )
+    else:
+        # Build a finding so the report explains why headline verdicts
+        # may be length-biased on this cohort.
+        too_short = [
+            r["run_id"] for r in aligned_view["rows"]
+            if r.get("alignment_status") == "too_short"
+        ]
+        if len(loaded) >= 2 and too_short:
+            logger.info(
+                "cap-window alignment unavailable — runs too short: %s",
+                ", ".join(too_short),
+            )
+
     differences = _explain_differences(loaded, matrix)
     problems = _unique_and_common_problems(loaded)
 
@@ -208,6 +243,13 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         # profiles (and thus when cross-run claims need a caveat).
         "peer_classes": peer_classes,
         "peer_mismatch_warnings": peer_warnings,
+        # v3-priority-6: cap-window alignment. `window_aligned_view`
+        # carries per-run scores at the canonical tail window so the
+        # report can show length-fair comparison alongside the raw
+        # full-window scores. `window_aligned_rankings` is what
+        # the headline verdicts actually consume.
+        "window_aligned_view": aligned_view,
+        "window_aligned_rankings": aligned_ranks,
         "pairwise_observations": differences,
         "common_and_unique_problems": problems,
         "static_diff": {
@@ -224,24 +266,36 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
 
     atomic_write_json(paths.findings, comparison_findings)
 
-    # v3-priority-2: headline verdicts read the cadence-annotated
-    # rankings, NOT the raw rankings. This is what kept ATLT4407's
-    # under-sampled cpu_avg from beating MORGANA on the headline; it
-    # also stops the empty 0-sample run from being crowned
-    # "best_overall" (covered separately when we wire same-host rules
-    # in v3-priority-7, but the cadence guard already excludes it).
-    def _top(name: str) -> str | None:
+    # v3-priority-6 + priority-2: headline verdicts.
+    # Order of preference for "best_*" / "most_stable" / "best_efficiency":
+    #   1. Aligned-window ranking (priority 6) — length-fair.
+    #   2. Cadence-annotated raw ranking (priority 2) — excludes
+    #      broken-cadence runs from sample-density-sensitive metrics.
+    # This is what stops ATLT4407 from winning "best efficiency"
+    # purely because its 902 s run integrated over a shorter window
+    # than MORGANA's 1469 s.
+    def _top_aligned(name: str) -> str | None:
+        ordered = aligned_ranks.get(name) or []
+        return ordered[0][0] if ordered else None
+
+    def _top_cadence(name: str) -> str | None:
         annotated = cadence_rankings.get(name) or {}
         ordered = annotated.get("ordered") or []
         return ordered[0][0] if ordered else None
+
+    def _top(name: str) -> str | None:
+        return _top_aligned(name) or _top_cadence(name)
 
     comparison_scores = {
         "best_overall": _top("best_overall"),
         "most_stable": _top("best_stability"),
         "best_efficiency": _top("best_efficiency"),
-        "lowest_cpu_avg": _top("lowest_cpu_avg"),
-        "lowest_latency_p95": _top("lowest_latency_p95"),
-        "fewest_anomalies": _top("fewest_anomalies"),
+        "lowest_cpu_avg": _top_cadence("lowest_cpu_avg"),
+        "lowest_latency_p95": _top_cadence("lowest_latency_p95"),
+        "fewest_anomalies": _top_cadence("fewest_anomalies"),
+        # Surface which window the score-based verdicts were chosen on
+        # so consumers don't have to guess.
+        "chosen_window": aligned_window or "full_run",
     }
     atomic_write_json(paths.scores, comparison_scores)
 
@@ -268,6 +322,8 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         rankings_with_confidence=cadence_rankings,
         peer_classes=peer_classes,
         peer_warnings=peer_warnings,
+        aligned_view=aligned_view,
+        aligned_window=aligned_window,
     )
     logger.info("comparison complete: %s", paths.comparison_dir)
     return paths.comparison_dir

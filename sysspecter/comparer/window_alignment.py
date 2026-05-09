@@ -1,0 +1,278 @@
+"""v3-priority-6 (A6): cap-window-aware comparison alignment.
+
+The v2 production review made this priority urgent: the comparison
+engine consumes raw scores that are computed over the full run
+window. ATLT4407 (902 s) vs MORGANA (1469 s) gives MORGANA an
+intrinsic advantage on every "average over time" metric — it
+integrates over a 62 % longer window. Any verdict like "MORGANA is
+more efficient" is biased by length before it reflects true
+behaviour.
+
+The fix already partially exists: `analyzer/scores.compute_tail_window_scores`
+emits canonical tail-window blocks (`last_1h`, `last_8h`) per run.
+What was missing: the comparison engine never used them. This
+module is that missing layer.
+
+Public API:
+
+    detect_aligned_window(loaded) -> str | None
+        Largest common tail window across all runs. None when at
+        least one run is too short (< 1 h) or when tail-window
+        data is absent (legacy run pre-A6).
+
+    build_aligned_view(loaded, window_label) -> dict
+        Per-run scoring at the aligned window. Same shape the
+        matrix expects, so downstream code can swap raw rankings
+        for aligned ones without restructuring.
+
+    aligned_score(scores, window_label, key) -> float | None
+        Single-cell lookup — used by matrix.py + rankings.
+
+    annotate_rankings_with_window(rankings, loaded, window_label)
+        Returns parallel rankings computed against the aligned
+        window. Preserves the original `rankings` so the report
+        can show "raw" vs "cap-window-aligned" side by side when
+        the analyst wants to verify the methodology.
+
+The point: refuse to take the apparent winner of a length-biased
+comparison at face value. Either we have a common cap window
+(use it) or we don't (downgrade confidence on length-sensitive
+metrics, same way cadence-quality already does in priority 2).
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+# Tail windows in widest-first order so we pick the largest the
+# whole cohort can support. Mirrors `_TAIL_WINDOWS_S` in
+# analyzer/scores.py — keep in sync.
+_WINDOW_PRIORITY: tuple[str, ...] = ("last_8h", "last_1h")
+
+
+def _tail_blocks(scores: dict[str, Any]) -> list[dict[str, Any]]:
+    return list(scores.get("tail_windows") or [])
+
+
+def detect_aligned_window(loaded: list[dict[str, Any]]) -> str | None:
+    """Pick the widest tail window every loaded run can produce.
+
+    Returns the window label (e.g. `"last_1h"`) or None when at
+    least one run is too short. Single source of truth so the
+    matrix, rankings and report all agree on the comparison frame.
+    """
+    if len(loaded) < 2:
+        return None
+    score_blocks = [r.get("scores") or {} for r in loaded]
+    for label in _WINDOW_PRIORITY:
+        if all(
+            any(tw.get("window_label") == label for tw in _tail_blocks(s))
+            for s in score_blocks
+        ):
+            return label
+    return None
+
+
+def aligned_score(
+    scores: dict[str, Any],
+    window_label: str,
+    key: str,
+) -> float | None:
+    """Look up one score field at the aligned tail window.
+
+    `key` follows the schema used elsewhere in the comparer:
+    `"overall"` / `"stability"` / `"efficiency"` / etc. The
+    sub-score schema nests the value under `.score`, e.g.
+    `tail.stability.score`. We handle both shapes.
+    """
+    if not window_label:
+        return None
+    for tw in _tail_blocks(scores):
+        if tw.get("window_label") != window_label:
+            continue
+        v = tw.get(key)
+        if isinstance(v, dict):
+            v = v.get("score")
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def aligned_score_for_run_id(
+    loaded: list[dict[str, Any]],
+    run_id: str,
+    window_label: str,
+    key: str,
+) -> float | None:
+    for r in loaded:
+        m = r.get("manifest") or {}
+        if m.get("run_id") != run_id:
+            continue
+        return aligned_score(r.get("scores") or {}, window_label, key)
+    return None
+
+
+def build_aligned_view(
+    loaded: list[dict[str, Any]],
+    window_label: str | None,
+) -> dict[str, Any]:
+    """Build per-run scores at the aligned window plus a comparison-
+    framing summary the report can show as a banner.
+
+    Output:
+        {
+            "window_label": "last_1h" | None,
+            "window_duration_seconds": float | None,
+            "rows": [
+                {
+                    "run_id": ..., "hostname": ...,
+                    "overall": float | None,
+                    "stability": float | None,
+                    "efficiency": float | None,
+                    "workload": float | None,
+                    "network": float | None,
+                    "hygiene": float | None,
+                    "samples_in_window": int | None,
+                    "alignment_status": "aligned" | "too_short" | "no_data",
+                },
+                ...
+            ],
+        }
+
+    `alignment_status` is per-run: `aligned` when the run produced a
+    matching tail-window block, `too_short` when the run is below
+    the requested window length, `no_data` when the run pre-dates
+    A6 entirely. With a `None` window the rows are still emitted
+    with empty score fields so the report can render a "no common
+    window" panel.
+    """
+    rows: list[dict[str, Any]] = []
+    duration: float | None = None
+    for r in loaded:
+        m = r.get("manifest") or {}
+        s = r.get("scores") or {}
+        run_id = m.get("run_id") or "?"
+        hostname = m.get("hostname")
+        actual = m.get("duration_actual_seconds") or 0.0
+        if window_label is None:
+            rows.append({
+                "run_id": run_id,
+                "hostname": hostname,
+                "overall": None,
+                "stability": None,
+                "efficiency": None,
+                "workload": None,
+                "network": None,
+                "hygiene": None,
+                "samples_in_window": None,
+                "alignment_status": "no_data",
+            })
+            continue
+        block = next(
+            (tw for tw in _tail_blocks(s)
+             if tw.get("window_label") == window_label),
+            None,
+        )
+        if block is None:
+            # Distinguish "too short" from "no_data". `tail_windows`
+            # absent entirely means pre-A6; present but missing this
+            # label means the run is too short to fit the window.
+            status = "too_short" if _tail_blocks(s) else "no_data"
+            rows.append({
+                "run_id": run_id,
+                "hostname": hostname,
+                "overall": None,
+                "stability": None,
+                "efficiency": None,
+                "workload": None,
+                "network": None,
+                "hygiene": None,
+                "samples_in_window": None,
+                "alignment_status": status,
+                "actual_duration_seconds": actual,
+            })
+            continue
+        if duration is None:
+            d = block.get("window_duration_seconds")
+            try:
+                duration = float(d) if d is not None else None
+            except (TypeError, ValueError):
+                duration = None
+        rows.append({
+            "run_id": run_id,
+            "hostname": hostname,
+            "overall": _coerce_score(block.get("overall")),
+            "stability": _coerce_score(_dig(block, "stability")),
+            "efficiency": _coerce_score(_dig(block, "efficiency")),
+            "workload": _coerce_score(_dig(block, "workload_suitability")),
+            "network": _coerce_score(_dig(block, "network_impact")),
+            "hygiene": _coerce_score(_dig(block, "resource_hygiene")),
+            "samples_in_window": block.get("window_samples"),
+            "alignment_status": "aligned",
+        })
+    return {
+        "window_label": window_label,
+        "window_duration_seconds": duration,
+        "rows": rows,
+    }
+
+
+def aligned_rankings(
+    loaded: list[dict[str, Any]],
+    window_label: str | None,
+) -> dict[str, list[tuple[str, float]]]:
+    """Build the same set of rankings the matrix already produces,
+    but using aligned-window scores instead of full-window ones.
+
+    Returns empty dict when no aligned window — caller falls back to
+    the raw rankings.
+    """
+    if not window_label:
+        return {}
+    metric_to_key = {
+        "best_overall": "overall",
+        "best_stability": "stability",
+        "best_efficiency": "efficiency",
+        "best_workload": "workload_suitability",
+        "best_network": "network_impact",
+        "best_hygiene": "resource_hygiene",
+    }
+    out: dict[str, list[tuple[str, float]]] = {}
+    for ranking_name, score_key in metric_to_key.items():
+        pairs: list[tuple[str, float]] = []
+        for r in loaded:
+            run_id = (r.get("manifest") or {}).get("run_id") or "?"
+            v = aligned_score(r.get("scores") or {}, window_label, score_key)
+            if v is None:
+                continue
+            pairs.append((run_id, v))
+        # Higher is better for all of these.
+        out[ranking_name] = sorted(pairs, key=lambda kv: kv[1], reverse=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+def _dig(d: dict[str, Any] | None, key: str) -> Any:
+    """Return d[key].score when it's a dict-shaped sub-score, else d[key]."""
+    if not isinstance(d, dict):
+        return None
+    v = d.get(key)
+    if isinstance(v, dict):
+        return v.get("score")
+    return v
+
+
+def _coerce_score(v: Any) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None

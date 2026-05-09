@@ -169,12 +169,83 @@ _TEMPLATE = """<!DOCTYPE html><html><head><meta charset="utf-8">
   </tbody></table>
 </div>
 
+{# v3-priority-6 (A6): cap-window alignment banner. When all runs
+   produce the same canonical tail window, the score-based verdicts
+   are computed on that window — length-fair. When they don't, the
+   banner says so explicitly. #}
+{% if aligned_window %}
+<div class="cadence-banner low">
+  <h3>Cap-window-aligned scoring &mdash; <code>{{ aligned_window }}</code>
+    <span class="cadence-pill good">length-fair</span></h3>
+  <p style="margin:4px 0 0 0">
+    All runs are long enough to produce a canonical
+    <b>{{ aligned_window }}</b> tail window. Score-based verdicts
+    (best_overall, most_stable, best_efficiency) are computed on that
+    window, so a run that simply ran longer doesn't get a free lift.
+    Raw full-run scores remain in the matrix below for reference.
+  </p>
+</div>
+{% else %}
+<div class="cadence-banner medium">
+  <h3>Cap-window alignment unavailable</h3>
+  <p style="margin:4px 0 0 0">
+    At least one run is shorter than the smallest canonical tail
+    window (1 h). Score-based verdicts are computed over each run's
+    full duration &mdash; longer runs may benefit from integrating
+    over more samples. Treat headline rankings as length-influenced
+    until the runs can be re-captured with a common minimum duration.
+  </p>
+</div>
+{% endif %}
+
+{% if aligned_view and aligned_view.rows %}
+<h2>Per-run scoring at the aligned window</h2>
+<div class="card">
+  <table><thead><tr>
+    <th>run</th><th>status</th><th>overall</th><th>stability</th>
+    <th>efficiency</th><th>workload</th><th>network</th><th>hygiene</th>
+    <th>samples</th>
+  </tr></thead><tbody>
+  {% for r in aligned_view.rows %}
+  <tr>
+    <td><code>{{ r.run_id }}</code></td>
+    <td>
+      {% if r.alignment_status == 'aligned' %}
+        <span class="cadence-pill good">aligned</span>
+      {% elif r.alignment_status == 'too_short' %}
+        <span class="cadence-pill degraded">too short</span>
+      {% else %}
+        <span class="cadence-pill unknown">no data</span>
+      {% endif %}
+    </td>
+    <td class="num">{{ r.overall if r.overall is not none else '—' }}</td>
+    <td class="num">{{ r.stability if r.stability is not none else '—' }}</td>
+    <td class="num">{{ r.efficiency if r.efficiency is not none else '—' }}</td>
+    <td class="num">{{ r.workload if r.workload is not none else '—' }}</td>
+    <td class="num">{{ r.network if r.network is not none else '—' }}</td>
+    <td class="num">{{ r.hygiene if r.hygiene is not none else '—' }}</td>
+    <td class="num">{{ r.samples_in_window if r.samples_in_window is not none else '—' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+{% endif %}
+
 <h2>Key verdicts</h2>
 <div class="card">
   <ul>
-  <li><b>Best overall:</b> <code>{{ verdicts.best_overall or '—' }}</code></li>
-  <li><b>Most stable:</b> <code>{{ verdicts.most_stable or '—' }}</code></li>
-  <li><b>Best efficiency:</b> <code>{{ verdicts.best_efficiency or '—' }}</code></li>
+  <li><b>Best overall:</b> <code>{{ verdicts.best_overall or '—' }}</code>
+    {% if verdicts.chosen_window and verdicts.chosen_window != 'full_run' %}
+    <span class="cadence-pill good">on {{ verdicts.chosen_window }}</span>{% endif %}
+  </li>
+  <li><b>Most stable:</b> <code>{{ verdicts.most_stable or '—' }}</code>
+    {% if verdicts.chosen_window and verdicts.chosen_window != 'full_run' %}
+    <span class="cadence-pill good">on {{ verdicts.chosen_window }}</span>{% endif %}
+  </li>
+  <li><b>Best efficiency:</b> <code>{{ verdicts.best_efficiency or '—' }}</code>
+    {% if verdicts.chosen_window and verdicts.chosen_window != 'full_run' %}
+    <span class="cadence-pill good">on {{ verdicts.chosen_window }}</span>{% endif %}
+  </li>
   <li><b>Lowest avg CPU:</b> <code>{{ verdicts.lowest_cpu_avg or '—' }}</code>
     {% if rankings_with_confidence and rankings_with_confidence.lowest_cpu_avg and not rankings_with_confidence.lowest_cpu_avg.trusted %}
     <span class="cadence-pill degraded">cadence-degraded ranking</span>{% endif %}
@@ -560,11 +631,14 @@ def _build_markdown(
     cadence_warnings: list[dict[str, Any]] | None = None,
     peer_classes: list[dict[str, Any]] | None = None,
     peer_warnings: list[dict[str, Any]] | None = None,
+    aligned_view: dict[str, Any] | None = None,
+    aligned_window: str | None = None,
 ) -> str:
     cadence_per_run = cadence_per_run or []
     cadence_warnings = cadence_warnings or []
     peer_classes = peer_classes or []
     peer_warnings = peer_warnings or []
+    aligned_view = aligned_view or {"window_label": None, "rows": []}
 
     lines = [f"# SysSpecter comparison — {comparison_id}", "_See everything. Find the cause._", ""]
     lines.append(f"**Analysis mode:** {mode_lbl} _(auto-detected from hostnames)_")
@@ -642,6 +716,54 @@ def _build_markdown(
                 f"| {p.get('max_gap_seconds') if p.get('max_gap_seconds') is not None else '—'}s "
                 f"| {p.get('samples_total') or '—'} "
                 f"| {p.get('process_priority_class') or '—'} |"
+            )
+        lines.append("")
+
+    # v3-priority-6 (A6): cap-window alignment block. Shown above the
+    # verdicts so the reader sees which window the verdicts use before
+    # acting on them.
+    if aligned_window:
+        lines.append(f"## Cap-window-aligned scoring — `{aligned_window}`")
+        lines.append("")
+        lines.append(
+            f"All runs are long enough to produce a canonical "
+            f"**{aligned_window}** tail window. Score-based verdicts "
+            f"(best_overall, most_stable, best_efficiency) are computed "
+            f"on that window — length-fair. Raw full-run scores remain "
+            f"in the matrix below."
+        )
+        lines.append("")
+    elif aligned_view and aligned_view.get("rows"):
+        lines.append("## Cap-window alignment unavailable")
+        lines.append("")
+        lines.append(
+            "At least one run is shorter than the smallest canonical "
+            "tail window (1 h). Score-based verdicts are computed over "
+            "each run's full duration — longer runs may benefit from "
+            "integrating over more samples."
+        )
+        lines.append("")
+
+    if aligned_view and aligned_view.get("rows"):
+        lines.append("### Per-run scoring at the aligned window")
+        lines.append(
+            "| run | status | overall | stability | efficiency | "
+            "workload | network | hygiene | samples |"
+        )
+        lines.append("|---|---|---|---|---|---|---|---|---|")
+        for r in aligned_view["rows"]:
+            def _fmt(x):
+                return "—" if x is None else x
+            lines.append(
+                f"| `{r.get('run_id')}` "
+                f"| {r.get('alignment_status') or '—'} "
+                f"| {_fmt(r.get('overall'))} "
+                f"| {_fmt(r.get('stability'))} "
+                f"| {_fmt(r.get('efficiency'))} "
+                f"| {_fmt(r.get('workload'))} "
+                f"| {_fmt(r.get('network'))} "
+                f"| {_fmt(r.get('hygiene'))} "
+                f"| {_fmt(r.get('samples_in_window'))} |"
             )
         lines.append("")
 
@@ -774,6 +896,8 @@ def build_comparison_report(
     rankings_with_confidence: dict[str, Any] | None = None,
     peer_classes: list[dict[str, Any]] | None = None,
     peer_warnings: list[dict[str, Any]] | None = None,
+    aligned_view: dict[str, Any] | None = None,
+    aligned_window: str | None = None,
 ) -> None:
     env = Environment(loader=BaseLoader(), autoescape=select_autoescape())
     tpl = env.from_string(_TEMPLATE)
@@ -793,6 +917,7 @@ def build_comparison_report(
     rankings_with_confidence = rankings_with_confidence or {}
     peer_classes = peer_classes or []
     peer_warnings = peer_warnings or []
+    aligned_view = aligned_view or {"window_label": None, "rows": []}
 
     from .mode import mode_label
     mode_lbl = mode_label(mode)  # type: ignore[arg-type]
@@ -833,6 +958,8 @@ def build_comparison_report(
         rankings_with_confidence=rankings_with_confidence,
         peer_classes=peer_classes,
         peer_warnings=peer_warnings,
+        aligned_view=aligned_view,
+        aligned_window=aligned_window,
     )
     tmp = paths.html + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -846,6 +973,8 @@ def build_comparison_report(
         cadence_warnings=cadence_warnings,
         peer_classes=peer_classes,
         peer_warnings=peer_warnings,
+        aligned_view=aligned_view,
+        aligned_window=aligned_window,
     )
     with open(paths.md, "w", encoding="utf-8") as f:
         f.write(md)
