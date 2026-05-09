@@ -21,6 +21,7 @@ from .loader import load_run_full
 from .matrix import build_matrix, write_matrix_csv
 from .mode import detect_mode, mode_label
 from .peer_context import build_peer_mismatch_findings, extract_machine_classes
+from .same_host_rules import build_same_host_findings
 from .static_diff import diff_autoruns, diff_config, diff_hardware, diff_software
 from .window_alignment import (
     aligned_rankings,
@@ -189,13 +190,35 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
     cfg_diff = diff_config(loaded)
     bottlenecks = bottleneck_comparison(matrix)
     hypotheses = generate_hypotheses(loaded, matrix, hw_diff, sw_diff, cfg_diff)
-    # Cadence-quality findings + peer-context findings rank ahead of
-    # everything else: if cadence is broken or peers don't match,
-    # downstream hypotheses are built on shaky comparisons. Cadence is
-    # listed FIRST because it gates whether the data itself is trustworthy;
-    # peer-context comes second because it gates whether the comparison
-    # is fair.
-    hypotheses = list(cadence_warnings) + list(peer_warnings) + list(hypotheses)
+
+    # v3-priority-7: same-host rule families. Run-cluster detection,
+    # regime-change, deterministic-deadlock, cross-run invariants,
+    # top-N consistency, exclusion gates. Most are gated to
+    # `mode == "before_after"` (same host across time); cross-run
+    # invariants and exclusions fire in any mode.
+    same_host_findings = build_same_host_findings(loaded, mode)
+    if same_host_findings:
+        high_severity = [
+            f for f in same_host_findings if f.get("severity") == "high"
+        ]
+        if high_severity:
+            top = high_severity[0]
+            logger.warning(
+                "same-host finding: [%s] %s",
+                top.get("kind"), top.get("hypothesis"),
+            )
+
+    # Order in `root_causes`:
+    #   1. cadence (data trust)
+    #   2. peer context (comparison fairness)
+    #   3. same-host pattern findings (the 7 rules)
+    #   4. existing diagnosis rules (disk/memory/cpu/...)
+    hypotheses = (
+        list(cadence_warnings)
+        + list(peer_warnings)
+        + list(same_host_findings)
+        + list(hypotheses)
+    )
     recommendations = generate_recommendations(hypotheses)
 
     # Field-review A5: lift the new schema fields (M5 machine_id,
@@ -250,6 +273,11 @@ def run_compare(run_dirs: list[str], output_root: str) -> str:
         # the headline verdicts actually consume.
         "window_aligned_view": aligned_view,
         "window_aligned_rankings": aligned_ranks,
+        # v3-priority-7: same-host rule findings. Separate from
+        # `root_causes` (where they're also folded in) so consumers
+        # who only care about the 7 same-host patterns can read
+        # them directly.
+        "same_host_findings": same_host_findings,
         "pairwise_observations": differences,
         "common_and_unique_problems": problems,
         "static_diff": {

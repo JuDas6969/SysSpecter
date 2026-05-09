@@ -6,6 +6,82 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (v3-priority-7: same-host comparison rules)
+
+The v2 production review's most damning finding: the engine fired
+**nothing** on the GPLT3923 7-run same-host corpus despite every run
+reproducing the same MotoDB bug. The HTML literally said *"No
+hypotheses triggered by the current rule set."* Framework existed,
+rule set was empty in the most-needed mode.
+
+This release adds the seven rule families the v3 plan called out as
+the missing analytics for `Before/after (same host)` mode:
+
+- **New `comparer/same_host_rules.py`** module with seven detectors:
+
+  1. **`detect_run_clusters`** — groups runs whose memory-leak
+     slopes cluster within ±5 % coefficient of variation. The exact
+     pattern from GPLT3923: 4 of 6 runs leaked MotoDB at
+     1716 / 1764 / 1781 / 1761 KB/s (CV ≈ 1.5 %) — same bug
+     reproducing deterministically. Severity goes high when ≥ 50 %
+     of runs are in the cluster.
+  2. **`detect_regime_changes`** — process-count discontinuities for
+     the same process name across runs. 1 → 68 → 114 PIDs of
+     `MotoDB.exe` is a worker-pool resize, not jitter; threshold
+     10× ratio. Surfaces per-run counts so the analyst sees the
+     full distribution.
+  3. **`detect_deterministic_deadlocks`** — RSS plateau + handles
+     plateau + CPU → 0 in the last-30-samples window across ≥ 2
+     runs on the same process name. The most-actionable signal in
+     a same-host leak corpus — points at the deadlock minute for
+     ETW capture on the next reproduction.
+  4. **`detect_cross_run_invariants`** — metrics constant across
+     all runs. Currently fires two patterns: `network_score = 0.0`
+     everywhere → policy-block hypothesis (e.g. ICMP filtered by
+     Zscaler / firewall — chasing per-run network anomalies won't
+     resolve); GPU adapter idle drain (power > 5 W with utilisation
+     < 1 %) → driver / power-state issue.
+  5. **`detect_top_n_consistency`** — processes appearing in the
+     top-N CPU/mem consumers across ≥ 50 % of runs. Surfaces the
+     constant-baseline-cost contributors so per-run anomalies on
+     them aren't mistaken for root cause.
+  6. **`detect_excluded_runs`** — flags runs that should NOT appear
+     in `best_*` rankings: zero samples (the v2 empty-run-wins-best-
+     overall bug), short runs below the verdict floor (60 s), broken
+     cadence (median gap > 3× nominal), too-few-samples runs.
+  7. *(Confidence gates fold into rule 6 — the same exclusion
+     check is what `best_*` rankings consult.)*
+
+- **Top-level orchestrator `build_same_host_findings(loaded, mode)`**.
+  Always-on: rules 4 + 6 (invariants + exclusions are useful in any
+  mode). Same-host-only: rules 1, 2, 3, 5 (these only make sense
+  comparing the same host across time).
+
+- **`comparison_findings.json`** gains a top-level
+  `same_host_findings` block. Findings are also folded into
+  `root_causes` after cadence + peer-context layers, so the existing
+  HTML/MD report renders them automatically with the standard
+  finding shape (`severity`, `confidence`, `category`, `kind`,
+  `run_id`, `peer_id`, `hypothesis`, `evidence`, `recommendation`,
+  `affected_runs`).
+
+- 21 new unit tests pinning each rule against hand-crafted cohorts
+  that mimic the GPLT3923 patterns the v2 engine missed:
+  - 4-of-6 cluster fires high severity
+  - divergent slopes don't cluster
+  - regime change fires on 1 → 68 PID jump
+  - 1 → 2 PID jitter doesn't fire
+  - deadlock fires on 2-of-3-runs match, doesn't fire on 1 run
+  - short runs (< 30 samples) skip deadlock detection
+  - network-zero invariant fires only when ALL runs match
+  - GPU idle drain invariant on every run
+  - top-5 consistency fires at ≥ 50 % share, not below
+  - exclusion gates: zero-sample, short, broken-cadence runs
+  - non-`before_after` mode skips same-host-only rules
+  - cross-run invariants still fire in fleet mode
+
+495 tests pass (was 474, +21 new), ruff clean, bandit clean.
+
 ### Added (v3-priority-6: cap-window-aware comparison alignment — A6)
 
 The v2 production review made this priority urgent: the comparison
