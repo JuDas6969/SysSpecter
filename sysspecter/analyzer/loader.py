@@ -56,6 +56,21 @@ class RunData:
     gpu_adapter_rows: list[dict[str, Any]]
     event_log: dict[str, Any]
     etw_disk: dict[str, Any]
+    # v3-priority-4 (H1): per-PID handle counts by object type. Empty
+    # list when the run pre-dates v3 or when the handles_sampler
+    # soft-degraded (locked-down host, no ntdll, etc.).
+    handles_rows: list[dict[str, Any]] = None  # type: ignore[assignment]
+
+
+def _coerce_handles_row(r: dict[str, Any]) -> dict[str, Any]:
+    out = dict(r)
+    for k in ("rel_seconds", "timestamp"):
+        if k in out:
+            out[k] = _to_float(out[k])
+    for k in ("pid", "count"):
+        if k in out:
+            out[k] = _to_int(out[k])
+    return out
 
 
 def _coerce_system_row(r: dict[str, Any]) -> dict[str, Any]:
@@ -225,4 +240,5 @@ def load_run(
         gpu_adapter_rows=_clip([_coerce_gpu_adapter_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_gpu_adapter.csv"))]),
         event_log=_read_json("event_log.json", {}),
         etw_disk=_read_json("etw_disk_summary.json", {}),
+        handles_rows=_clip([_coerce_handles_row(r) for r in _read_csv(os.path.join(run_dir, "timeline_handles.csv"))]),
     )

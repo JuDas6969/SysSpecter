@@ -141,6 +141,11 @@ def analyze_run(
             "anomalies": [],
             "slowdowns": [],
             "leaks": {"memory": [], "handles": [], "threads": []},
+            "handle_leaks_by_type": {
+                "samples_seen": 0,
+                "per_type_findings": [],
+                "rcw_signature_candidates": [],
+            },
             "deadlocks": [],
             "process_tree": {
                 "by_parent": [], "spawn_counts": {}, "exit_counts": {},
@@ -225,6 +230,14 @@ def analyze_run(
     logger.info("detecting periodic patterns")
     from .periodicity import detect_periodicities
     periodicities = detect_periodicities(rd.system_rows, rd.process_rows)
+
+    # v3-priority-4 (H1): per-(pid, type) handle-leak analyzer.
+    # Empty when the run pre-dates v3-priority-4 (no handles_rows).
+    logger.info("detecting per-type handle leaks")
+    from .handle_types import detect_handle_type_leaks
+    handle_type_leaks = detect_handle_type_leaks(
+        getattr(rd, "handles_rows", None) or [],
+    )
 
     # Field-review C3: machine-class baseline deviations. Reads the
     # machine class from manifest.meta (set via --machine-class or a
@@ -311,6 +324,9 @@ def analyze_run(
         "anomalies": anomalies,
         "slowdowns": slowdowns,
         "leaks": leaks,
+        # v3-priority-4 (H1): per-(pid, type) handle leaks. Empty
+        # containers when the run pre-dates the H1 sampler.
+        "handle_leaks_by_type": handle_type_leaks,
         "deadlocks": deadlocks,
         "process_tree": process_tree,
         "periodicities": periodicities,

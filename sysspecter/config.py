@@ -35,6 +35,12 @@ EXPENSIVE_COLLECTOR_INTERVAL = 30
 PROCESS_ENUM_REFRESH_INTERVAL = 10
 TOP_N_PROCESSES = 20
 LATENCY_PROBE_INTERVAL = 15
+# v3-priority-4 (H1): per-PID handle counts by object type. The
+# system-wide handle table on a busy host can be 100 MB+; sampling
+# every minute keeps the cost near zero while still giving the
+# leak detector enough resolution to spot a 1000 handles/min growth.
+HANDLES_PROBE_INTERVAL = 60
+HANDLES_TOP_N_PIDS = 50
 
 DEFAULT_LATENCY_TARGETS = [
     "127.0.0.1",

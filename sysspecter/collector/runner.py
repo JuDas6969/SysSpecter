@@ -24,6 +24,8 @@ import psutil
 
 from ..config import (
     EXPENSIVE_COLLECTOR_INTERVAL,
+    HANDLES_PROBE_INTERVAL,
+    HANDLES_TOP_N_PIDS,
     LATENCY_PROBE_INTERVAL,
     Config,
 )
@@ -35,6 +37,7 @@ from ..reporter.csv_export import (
     GPU_ADAPTER_FIELDS,
     GPU_ENGINE_FIELDS,
     GPU_PROCESS_FIELDS,
+    HANDLES_FIELDS,
     LATENCY_FIELDS,
     NETWORK_FIELDS,
     PER_CORE_FIELDS,
@@ -64,6 +67,8 @@ from .gpu_sampler import (
 from .gpu_sampler import (
     proc_to_dict as gpu_proc_to_dict,
 )
+from .handles_sampler import collect_handles_snapshot
+from .handles_sampler import to_csv_rows as handles_to_csv_rows
 from .latency_sampler import collect_latency_sample
 from .latency_sampler import sample_to_dict as lat_sample_to_dict
 from .network_sampler import collect_network_sample
@@ -277,12 +282,15 @@ def run_monitor(config: Config) -> str:
     connections_csv = StreamingCSV(paths.timeline_connections_csv, CONNECTIONS_FIELDS)
     # H5: long-format per-core CPU stream alongside the system timeline.
     per_core_csv = StreamingCSV(paths.timeline_per_core_csv, PER_CORE_FIELDS)
+    # v3-priority-4 (H1): per-PID handle counts by object type.
+    handles_csv = StreamingCSV(paths.timeline_handles_csv, HANDLES_FIELDS)
     system_csv.open()
     process_csv.open()
     network_csv.open()
     latency_csv.open()
     connections_csv.open()
     per_core_csv.open()
+    handles_csv.open()
 
     # Phase 3 optional streams
     gpu_engine_csv = gpu_process_csv = gpu_adapter_csv = None
@@ -321,6 +329,9 @@ def run_monitor(config: Config) -> str:
     next_tick = started_mono
     next_expensive = started_mono + EXPENSIVE_COLLECTOR_INTERVAL
     next_latency = started_mono + 5.0  # first latency probe shortly after start
+    # v3-priority-4: first handles probe shortly after start (3 s) so
+    # short runs still get one snapshot; subsequent ones every minute.
+    next_handles = started_mono + 3.0
     next_flush = started_mono + 10.0
     next_heartbeat = started_mono + 2.0
     next_log_heartbeat = started_mono + 10.0  # touches collector.log for the stop-detector
@@ -385,6 +396,44 @@ def run_monitor(config: Config) -> str:
                 latency_csv.write_many([lat_sample_to_dict(s) for s in lat_samples])
                 next_latency = now + LATENCY_PROBE_INTERVAL
 
+            # v3-priority-4 (H1): handle-table snapshot. The single
+            # most-impactful missing-data item from the v2 review.
+            # Soft-degrades: collect_handles_snapshot returns [] on
+            # any failure (no admin, sandboxed, ntdll missing) so we
+            # log the degradation once and continue.
+            if now >= next_handles:
+                try:
+                    h_rows = collect_handles_snapshot(
+                        top_n_pids=HANDLES_TOP_N_PIDS,
+                    )
+                    if h_rows:
+                        # Build pid → name map from the most recent
+                        # process sample so the CSV is human-readable
+                        # without joining against timeline_processes.
+                        pid_to_name = {
+                            int(s.pid): s.name for s in proc_samples
+                            if getattr(s, "pid", None) and getattr(s, "name", None)
+                        }
+                        handles_csv.write_many(handles_to_csv_rows(
+                            h_rows,
+                            sys_sample.timestamp,
+                            sys_sample.rel_seconds,
+                            pid_to_name,
+                        ))
+                    elif next_handles == started_mono + 3.0:
+                        # First probe came back empty — record
+                        # degradation once. Subsequent empties don't
+                        # spam the manifest.
+                        mark_degraded(
+                            paths.manifest, "handles_sampler",
+                            "snapshot returned no rows (locked-down host?)",
+                        )
+                except Exception as e:
+                    logger.warning("handle snapshot failed: %s", e)
+                    mark_degraded(paths.manifest, "handles_sampler",
+                                  f"{type(e).__name__}: {e}")
+                next_handles = now + HANDLES_PROBE_INTERVAL
+
             if now >= next_expensive:
                 curr_procs = collect_process_tree_snapshot()
                 curr_map = _proc_map_from_snapshot(curr_procs)
@@ -430,6 +479,7 @@ def run_monitor(config: Config) -> str:
                 network_csv.flush()
                 latency_csv.flush()
                 connections_csv.flush()
+                handles_csv.flush()
                 if gpu_engine_csv is not None:
                     gpu_engine_csv.flush()
                     gpu_process_csv.flush()
@@ -473,6 +523,7 @@ def run_monitor(config: Config) -> str:
         latency_csv.close()
         connections_csv.close()
         per_core_csv.close()
+        handles_csv.close()
         if gpu_engine_csv is not None:
             gpu_engine_csv.close()
             gpu_process_csv.close()

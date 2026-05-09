@@ -72,6 +72,11 @@ class RunPaths:
         return os.path.join(self.run_dir, "timeline_per_core.csv")
 
     @property
+    def timeline_handles_csv(self) -> str:
+        # v3-priority-4 (H1): per-PID handle counts by object type.
+        return os.path.join(self.run_dir, "timeline_handles.csv")
+
+    @property
     def event_log_json(self) -> str:
         return os.path.join(self.run_dir, "event_log.json")
 

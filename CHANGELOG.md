@@ -6,6 +6,66 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (v3-priority-4: per-PID handle counts by object type — H1)
+
+The single most-impactful missing-data item from the v2 production
+review. Without it, the prior MotoDB diagnosis was stuck at "consistent
+with COM RCW leak" — a slow, opaque growth in `num_handles`. With this,
+the engine can now say "15 000 Section + 12 000 Event handles vs a
+baseline of 200 over a 10 min window — that's a COM Runtime-Callable-
+Wrapper leak in N seconds, verified."
+
+- **New `collector/handles_sampler.py` module.** Calls
+  `NtQuerySystemInformation(SystemExtendedHandleInformation, …)` to
+  walk the kernel's full handle table, then `NtQueryObject(NULL,
+  ObjectAllTypesInformation, …)` once per process to resolve
+  ObjectTypeIndex → human-readable type name (`File`, `Event`,
+  `Mutant`, `Section`, `Thread`, `Process`, `Token`, etc.). Aggregates
+  per (PID, type_name). Top-N gate (default 50 PIDs) keeps the CSV
+  manageable on hosts with hundreds of PIDs. Soft-degrades to []
+  on every error path: non-Windows, ntdll missing, sandboxed, or
+  locked-down. Live smoke on a real Windows host: 73 object types
+  resolved, 34k+ handles aggregated across top 5 PIDs.
+
+- **New `timeline_handles.csv`** with columns
+  `[timestamp, rel_seconds, pid, name, type_name, count]`. Sampled
+  every 60 s by default — too cheap to skip, and per-second would
+  burn CPU on hosts with > 500 k handles. The runner stamps a
+  `mark_degraded("handles_sampler", …)` on the manifest when the
+  first probe returns empty so consumers know the data is missing.
+
+- **New `analyzer/handle_types.py` module + `findings.handle_leaks_by_type`
+  block.** Per (PID, type) least-squares slope (handles per minute);
+  thresholds at 5 / 30 / 200 handles/min for low / medium / high
+  severity. Noisy types (`Job`, `Driver`, `Type`, `Adapter`) are
+  excluded — they grow naturally and aren't actionable as "leaks".
+  Findings sorted by severity then slope.
+
+- **RCW signature detection.** When a PID is leaking BOTH `Section`
+  AND `Event` handles in tandem (each crossing the medium threshold),
+  emit a `rcw_signature_candidates` entry — the textbook COM Runtime-
+  Callable-Wrapper leak signature. This is what would have moved the
+  prior MotoDB diagnosis from "consistent with" to "verified."
+
+- **`config.py`**: `HANDLES_PROBE_INTERVAL = 60`,
+  `HANDLES_TOP_N_PIDS = 50` for tuning.
+
+- **`paths.RunPaths.timeline_handles_csv`** and
+  `RunData.handles_rows` (with `_coerce_handles_row`); fully
+  back-compat — pre-v3 runs without the CSV simply get an empty
+  list.
+
+- 27 new unit tests pinning: ObjectTypeIndex resolution + cache
+  reset; `_aggregate` against hand-crafted SystemExtendedHandleInfo
+  buffers (groups by (pid, type), drops PID 0, falls back to
+  `TypeIndex_<n>` when types unresolved); top-N PID capping;
+  soft-degrade when query fails; CSV row shape; the analyzer's
+  threshold ladder (low/medium/high); noisy-type exclusion; RCW
+  signature firing only when Section+Event grow together; backward-
+  compat with empty/None inputs; multi-PID ordering by severity.
+
+432 tests pass (was 405), ruff clean, bandit clean.
+
 ### Added (v3-priority-3: tighter root-cause claims)
 
 The v2 production review caught the engine making a confident causal

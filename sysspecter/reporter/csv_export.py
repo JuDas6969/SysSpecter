@@ -79,6 +79,16 @@ PER_CORE_FIELDS = [
     "timestamp", "rel_seconds", "core_idx", "cpu_pct",
 ]
 
+# v3-priority-4 (H1): per-PID handle counts by object type. Sampled
+# every ~60 s (slower than the per-second sampler — handle enumeration
+# is expensive on a busy host with > 500 k handles). One row per
+# (sample, pid, type_name) so a downstream consumer can pivot
+# arbitrarily: total handles per PID over time, type-mix per process,
+# fleet-wide signature of a type-specific leak.
+HANDLES_FIELDS = [
+    "timestamp", "rel_seconds", "pid", "name", "type_name", "count",
+]
+
 
 class StreamingCSV:
     def __init__(self, path: str, fields: list[str]):
