@@ -6,6 +6,73 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added (v3-priority-5: .NET CLR managed-heap counters — H2)
+
+The second-most-impactful missing-data item from the v3 plan. Without
+it, the analyzer can't distinguish a native leak (RSS grows, managed
+heap flat — C/C++/COM bug) from a managed leak (RSS grows, gen-2 also
+grows — retained roots in .NET). Critical for any .NET / Matlab /
+Office workload — most of enterprise.
+
+- **New `collector/managed_heap_sampler.py`** module. Reads the
+  `.NET CLR Memory` PerformanceCounter category via PDH (`win32pdh`,
+  already a hard dependency through pywin32). Counters captured per
+  .NET process: bytes-in-all-heaps, gen-0/1/2/LOH heap sizes, gen-0/1/2
+  collection counts, % time in GC, pinned objects, allocated bytes/sec.
+  Instance → PID mapping via the parallel `Process ID` counter, with
+  fallback to parsing the `<exe>_p<pid>` suffix that modern .NET emits.
+  Soft-degrades to `[]` on every error path: non-Windows, pywin32
+  missing, no .NET apps running, locked-down host, .NET-Core-only
+  runtime (where the category isn't populated).
+
+- **New `timeline_managed_heap.csv`** with columns
+  `[timestamp, rel_seconds, pid, name, bytes_in_all_heaps,
+  gen0_heap_size, gen1_heap_size, gen2_heap_size,
+  large_object_heap_size, gen0_collections, gen1_collections,
+  gen2_collections, pct_time_in_gc, pinned_objects,
+  allocated_bytes_per_sec]`. Sampled every 30 s by default.
+  Runner stamps `mark_degraded("managed_heap_sampler", ...)` on the
+  first empty probe so the report knows the data is missing.
+
+- **New `analyzer/managed_heap.py` module + `findings.managed_heap_leaks`
+  block.** Two outputs:
+
+  - **`managed_leaks`**: per-PID gen-2 heap-size slope detection
+    with thresholds at 50 KB / 500 KB / 5 MB per minute (low /
+    medium / high severity). The `gen2_collections_observed` field
+    surfaces "leak despite GC pressure" — the textbook retained-roots
+    signature.
+  - **`native_only_leaks`** — *the killer feature*: when RSS grows
+    but the managed heap is flat (managed share < 20% of RSS growth),
+    the leak is in unmanaged memory (C/C++/COM allocations, native
+    handle stores). Emits `ratio_native_share` so the analyst can see
+    "94% of this PID's RSS growth is unmanaged → look in native code".
+    Without v3-priority-5 the prior MotoDB diagnosis was stuck at
+    "consistent with COM RCW leak"; with it, the engine can say
+    "verified native-only leak in MotoDB.exe — managed heap stable
+    while RSS grew 10 MB/min".
+
+- `paths.RunPaths.timeline_managed_heap_csv` and
+  `RunData.managed_heap_rows`. Fully back-compat — pre-v3 runs
+  without the CSV simply get an empty list.
+
+- `config.MANAGED_HEAP_PROBE_INTERVAL = 30` for tuning.
+
+- 23 new unit tests pinning: PDH wrapper soft-degrade (non-Windows,
+  pywin32 missing, no .NET instances); instance-name parsing
+  (`<exe>_p<pid>` suffix, PDH `#<n>` disambiguator, plain names,
+  false-positive guard for names like `firefox_private`); CSV row
+  shape against `MANAGED_HEAP_FIELDS`; gen-2 threshold ladder;
+  `gen2_collections_observed` reporting; the native-only diff (fires
+  when RSS grows + heap flat, doesn't fire when both grow together,
+  skips PIDs with no RSS growth, skips when process_rows empty);
+  multi-PID severity ordering; back-compat with empty/None inputs.
+
+JVM and Python managed-heap counters are deferred to v3-priority-5b
+in a follow-up round.
+
+455 tests pass (was 432, +23 new), ruff clean, bandit clean.
+
 ### Added (v3-priority-4: per-PID handle counts by object type — H1)
 
 The single most-impactful missing-data item from the v2 production

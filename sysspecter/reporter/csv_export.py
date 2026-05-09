@@ -89,6 +89,24 @@ HANDLES_FIELDS = [
     "timestamp", "rel_seconds", "pid", "name", "type_name", "count",
 ]
 
+# v3-priority-5 (H2): .NET CLR managed-heap counters. One row per
+# (sample, pid). The "_Global_" instance is dropped — we only emit
+# per-process rows so the analyzer can correlate with timeline_processes.
+# Bytes-in-all-heaps and gen-2-size are the load-bearing fields for
+# leak detection (gen 2 grows = retained roots, the textbook managed-
+# memory leak signature). Cumulative collection counts let the
+# analyzer derive per-minute GC pressure.
+MANAGED_HEAP_FIELDS = [
+    "timestamp", "rel_seconds", "pid", "name",
+    "bytes_in_all_heaps",
+    "gen0_heap_size", "gen1_heap_size", "gen2_heap_size",
+    "large_object_heap_size",
+    "gen0_collections", "gen1_collections", "gen2_collections",
+    "pct_time_in_gc",
+    "pinned_objects",
+    "allocated_bytes_per_sec",
+]
+
 
 class StreamingCSV:
     def __init__(self, path: str, fields: list[str]):

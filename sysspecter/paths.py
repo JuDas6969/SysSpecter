@@ -77,6 +77,11 @@ class RunPaths:
         return os.path.join(self.run_dir, "timeline_handles.csv")
 
     @property
+    def timeline_managed_heap_csv(self) -> str:
+        # v3-priority-5 (H2): .NET CLR managed-heap counters per PID.
+        return os.path.join(self.run_dir, "timeline_managed_heap.csv")
+
+    @property
     def event_log_json(self) -> str:
         return os.path.join(self.run_dir, "event_log.json")
 

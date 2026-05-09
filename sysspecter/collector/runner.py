@@ -27,6 +27,7 @@ from ..config import (
     HANDLES_PROBE_INTERVAL,
     HANDLES_TOP_N_PIDS,
     LATENCY_PROBE_INTERVAL,
+    MANAGED_HEAP_PROBE_INTERVAL,
     Config,
 )
 from ..logging_setup import get_logger
@@ -39,6 +40,7 @@ from ..reporter.csv_export import (
     GPU_PROCESS_FIELDS,
     HANDLES_FIELDS,
     LATENCY_FIELDS,
+    MANAGED_HEAP_FIELDS,
     NETWORK_FIELDS,
     PER_CORE_FIELDS,
     PROCESS_FIELDS,
@@ -71,6 +73,8 @@ from .handles_sampler import collect_handles_snapshot
 from .handles_sampler import to_csv_rows as handles_to_csv_rows
 from .latency_sampler import collect_latency_sample
 from .latency_sampler import sample_to_dict as lat_sample_to_dict
+from .managed_heap_sampler import collect_managed_heap_snapshot
+from .managed_heap_sampler import to_csv_rows as managed_heap_to_csv_rows
 from .network_sampler import collect_network_sample
 from .network_sampler import sample_to_dict as net_sample_to_dict
 from .process_diff import diff_process_snapshot
@@ -284,6 +288,10 @@ def run_monitor(config: Config) -> str:
     per_core_csv = StreamingCSV(paths.timeline_per_core_csv, PER_CORE_FIELDS)
     # v3-priority-4 (H1): per-PID handle counts by object type.
     handles_csv = StreamingCSV(paths.timeline_handles_csv, HANDLES_FIELDS)
+    # v3-priority-5 (H2): .NET CLR managed-heap counters per PID.
+    managed_heap_csv = StreamingCSV(
+        paths.timeline_managed_heap_csv, MANAGED_HEAP_FIELDS,
+    )
     system_csv.open()
     process_csv.open()
     network_csv.open()
@@ -291,6 +299,7 @@ def run_monitor(config: Config) -> str:
     connections_csv.open()
     per_core_csv.open()
     handles_csv.open()
+    managed_heap_csv.open()
 
     # Phase 3 optional streams
     gpu_engine_csv = gpu_process_csv = gpu_adapter_csv = None
@@ -332,6 +341,9 @@ def run_monitor(config: Config) -> str:
     # v3-priority-4: first handles probe shortly after start (3 s) so
     # short runs still get one snapshot; subsequent ones every minute.
     next_handles = started_mono + 3.0
+    # v3-priority-5: first managed-heap probe at +5 s; subsequent
+    # probes every MANAGED_HEAP_PROBE_INTERVAL seconds.
+    next_managed_heap = started_mono + 5.0
     next_flush = started_mono + 10.0
     next_heartbeat = started_mono + 2.0
     next_log_heartbeat = started_mono + 10.0  # touches collector.log for the stop-detector
@@ -434,6 +446,36 @@ def run_monitor(config: Config) -> str:
                                   f"{type(e).__name__}: {e}")
                 next_handles = now + HANDLES_PROBE_INTERVAL
 
+            # v3-priority-5 (H2): .NET CLR managed-heap snapshot.
+            # Distinguishes native leaks (RSS up, heap flat — C/C++/COM
+            # bug) from managed leaks (RSS up, gen2 also up — retained
+            # roots in .NET code). Soft-degrades on hosts with no .NET
+            # processes (returns []) or missing pywin32.
+            if now >= next_managed_heap:
+                try:
+                    mh_rows = collect_managed_heap_snapshot()
+                    if mh_rows:
+                        managed_heap_csv.write_many(managed_heap_to_csv_rows(
+                            mh_rows,
+                            sys_sample.timestamp,
+                            sys_sample.rel_seconds,
+                        ))
+                    elif next_managed_heap == started_mono + 5.0:
+                        # Mark degradation once on the first empty
+                        # probe — most common cause: no .NET app
+                        # running on the host. Subsequent empties
+                        # don't spam the manifest.
+                        mark_degraded(
+                            paths.manifest, "managed_heap_sampler",
+                            "no .NET processes found "
+                            "(category empty or .NET Core only)",
+                        )
+                except Exception as e:
+                    logger.warning("managed-heap snapshot failed: %s", e)
+                    mark_degraded(paths.manifest, "managed_heap_sampler",
+                                  f"{type(e).__name__}: {e}")
+                next_managed_heap = now + MANAGED_HEAP_PROBE_INTERVAL
+
             if now >= next_expensive:
                 curr_procs = collect_process_tree_snapshot()
                 curr_map = _proc_map_from_snapshot(curr_procs)
@@ -480,6 +522,7 @@ def run_monitor(config: Config) -> str:
                 latency_csv.flush()
                 connections_csv.flush()
                 handles_csv.flush()
+                managed_heap_csv.flush()
                 if gpu_engine_csv is not None:
                     gpu_engine_csv.flush()
                     gpu_process_csv.flush()
@@ -524,6 +567,7 @@ def run_monitor(config: Config) -> str:
         connections_csv.close()
         per_core_csv.close()
         handles_csv.close()
+        managed_heap_csv.close()
         if gpu_engine_csv is not None:
             gpu_engine_csv.close()
             gpu_process_csv.close()

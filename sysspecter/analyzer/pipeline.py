@@ -146,6 +146,11 @@ def analyze_run(
                 "per_type_findings": [],
                 "rcw_signature_candidates": [],
             },
+            "managed_heap_leaks": {
+                "samples_seen": 0,
+                "managed_leaks": [],
+                "native_only_leaks": [],
+            },
             "deadlocks": [],
             "process_tree": {
                 "by_parent": [], "spawn_counts": {}, "exit_counts": {},
@@ -239,6 +244,17 @@ def analyze_run(
         getattr(rd, "handles_rows", None) or [],
     )
 
+    # v3-priority-5 (H2): managed-heap leak detection + native/managed
+    # diff. Distinguishes a .NET retained-roots bug ("gen2 grows") from
+    # an unmanaged C/C++/COM leak ("RSS grows but managed heap flat").
+    # Empty when the run pre-dates v3-priority-5 or no .NET app ran.
+    logger.info("detecting managed-heap leaks")
+    from .managed_heap import detect_managed_heap_leaks
+    managed_heap_leaks = detect_managed_heap_leaks(
+        getattr(rd, "managed_heap_rows", None) or [],
+        rd.process_rows,
+    )
+
     # Field-review C3: machine-class baseline deviations. Reads the
     # machine class from manifest.meta (set via --machine-class or a
     # capture profile's suggested_meta) and flags metrics that fall
@@ -327,6 +343,9 @@ def analyze_run(
         # v3-priority-4 (H1): per-(pid, type) handle leaks. Empty
         # containers when the run pre-dates the H1 sampler.
         "handle_leaks_by_type": handle_type_leaks,
+        # v3-priority-5 (H2): managed-heap leaks + native/managed
+        # attribution. Empty containers when no .NET data captured.
+        "managed_heap_leaks": managed_heap_leaks,
         "deadlocks": deadlocks,
         "process_tree": process_tree,
         "periodicities": periodicities,

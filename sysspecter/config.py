@@ -42,6 +42,12 @@ LATENCY_PROBE_INTERVAL = 15
 HANDLES_PROBE_INTERVAL = 60
 HANDLES_TOP_N_PIDS = 50
 
+# v3-priority-5 (H2): .NET CLR managed-heap counters. PDH is cheap;
+# 30 s is plenty of resolution for managed-memory leak detection
+# without hammering the perfcounter system on a host with many .NET
+# processes.
+MANAGED_HEAP_PROBE_INTERVAL = 30
+
 DEFAULT_LATENCY_TARGETS = [
     "127.0.0.1",
     "8.8.8.8",
