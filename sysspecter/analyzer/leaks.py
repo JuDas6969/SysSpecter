@@ -244,9 +244,108 @@ def _grade_confidence(
     return base
 
 
-def detect_memory_leaks(
-    process_rows: list[dict[str, Any]], th: Thresholds
+def _cadence_broken_fallback(
+    process_rows: list[dict[str, Any]],
+    th: Thresholds,
+    *,
+    already_flagged: set[int],
 ) -> list[dict[str, Any]]:
+    """v1.3.3: low-sample-count fallback when the run's cadence is
+    broken.
+
+    Production scenario from ATLT4407: 28 samples over 1798 s (median
+    gap 68 s, declared `cadence_health: broken`). The full-run
+    regression in `_trend_stats` succeeds at 28 points, but the
+    sliding-window peak-detection bails (min_samples=30 per window)
+    and the resulting confidence drops to "suspicious" — and on
+    runs where `_trend_stats` itself returns None (< 20 samples), the
+    detector goes silent entirely. Result: a 138 MB self-leak shows
+    up in the timeline but produces zero `memory_leak_candidate`
+    findings — a false negative that would mislead an operator into
+    "no leak found = green light".
+
+    This fallback runs only when cadence is broken. For each PID NOT
+    already flagged by the main detector, it computes a simple
+    linear regression on the raw RSS series and flags clear linear
+    growth with `confidence: low (cadence-degraded)`. The thresholds
+    are deliberately permissive (10+ samples, 50 MB+ absolute growth,
+    R² ≥ 0.6) — better conservative-positive than false-negative
+    when cadence already broken.
+    """
+    out: list[dict[str, Any]] = []
+    buckets = _series_for_pid(process_rows, "rss_bytes")
+    for pid, points in buckets.items():
+        if pid in already_flagged:
+            continue
+        if len(points) < 10:
+            continue
+        pts = sorted(points, key=lambda p: p[0])
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        if xs[-1] - xs[0] < th.leak_min_duration_seconds:
+            continue
+        slope = linear_regression_slope(xs, ys)
+        if slope is None or slope <= 0:
+            continue
+        r2 = linear_regression_r2(xs, ys) or 0.0
+        if r2 < 0.6:
+            continue
+        s_val = ys[0]
+        e_val = ys[-1]
+        growth_bytes = e_val - s_val
+        # Conservative-permissive threshold: flag only on clearly
+        # significant absolute growth so we don't drown the operator
+        # in noisy positives on broken-cadence runs.
+        if growth_bytes < 50 * 1024 * 1024:  # 50 MB floor
+            continue
+        name = pts[-1][2]
+        dur = xs[-1] - xs[0]
+        growth_ratio = (growth_bytes / s_val) if s_val > 0 else 0.0
+        out.append({
+            "kind": "memory_leak_candidate",
+            "confidence": "low (cadence-degraded)",
+            "pid": pid,
+            "process_name": name,
+            "stack": _stack_for_pid(process_rows, pid) or "native",
+            "rss_start_mb": round(s_val / (1024 * 1024), 1),
+            "rss_end_mb": round(e_val / (1024 * 1024), 1),
+            "rss_peak_mb": round(max(ys) / (1024 * 1024), 1),
+            "growth_mb": round(growth_bytes / (1024 * 1024), 1),
+            "growth_ratio": round(growth_ratio, 2),
+            "duration_s": round(dur, 1),
+            "slope_bytes_per_sec": round(slope, 1),
+            "r2": round(r2, 3),
+            "monotonic_ratio": None,
+            "plateau_fraction": None,
+            "slope_source": "cadence_broken_fallback",
+            "windows_evaluated": 0,
+            "peak_window": None,
+            "growth_phase_end_s": None,
+            "description": (
+                f"{name} (pid {pid}) RSS grew {growth_bytes/1024/1024:.1f} MB "
+                f"over {dur:.0f} s ({slope/1024:.1f} KB/s, R²={r2:.2f}) on "
+                f"a broken-cadence run ({len(points)} samples). The main "
+                f"detector requires >= 30 samples per window and was "
+                f"silent — this fallback flags clear linear growth at "
+                f"low confidence so the leak isn't missed entirely. "
+                f"Re-capture with a working cadence to grade properly."
+            ),
+        })
+    return sorted(out, key=lambda e: e["growth_mb"], reverse=True)
+
+
+def detect_memory_leaks(
+    process_rows: list[dict[str, Any]], th: Thresholds,
+    *,
+    cadence_health: str | None = None,
+) -> list[dict[str, Any]]:
+    """Detect linear RSS growth per PID.
+
+    `cadence_health` (v1.3.3): when "broken", runs an additional
+    permissive fallback pass for PIDs the main detector missed due
+    to too-few samples. Pass-through `None` reproduces v1.3.2
+    behaviour exactly.
+    """
     out: list[dict[str, Any]] = []
     buckets = _series_for_pid(process_rows, "rss_bytes")
     for pid, points in buckets.items():
@@ -369,6 +468,15 @@ def detect_memory_leaks(
                 f"Confidence: {confidence}."
             )
         out.append(finding)
+
+    # v1.3.3: cadence-broken fallback for PIDs the main detector missed.
+    # Skipped on healthy cadence — keeps the historical behaviour identical.
+    if cadence_health == "broken":
+        already = {f["pid"] for f in out}
+        out.extend(_cadence_broken_fallback(
+            process_rows, th, already_flagged=already,
+        ))
+
     return sorted(out, key=lambda e: e["growth_mb"], reverse=True)
 
 
@@ -498,10 +606,20 @@ def detect_thread_leaks(
 
 
 def detect_leak_patterns(
-    process_rows: list[dict[str, Any]], th: Thresholds
+    process_rows: list[dict[str, Any]], th: Thresholds,
+    *,
+    cadence_health: str | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
+    """Detect memory / handle / thread leak patterns.
+
+    `cadence_health` (v1.3.3): forwarded to `detect_memory_leaks` so the
+    cadence-broken fallback can fire on degraded runs. Default `None`
+    reproduces pre-v1.3.3 behaviour.
+    """
     return {
-        "memory": detect_memory_leaks(process_rows, th),
+        "memory": detect_memory_leaks(
+            process_rows, th, cadence_health=cadence_health,
+        ),
         "handles": detect_handle_leaks(process_rows, th),
         "threads": detect_thread_leaks(process_rows, th),
     }

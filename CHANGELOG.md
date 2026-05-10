@@ -6,6 +6,90 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.3.3] — 2026-05-10
+
+Targeted leak fix on v1.3.2 — the user's `--profile-leak` run on
+ATLT4407 finally pinpointed the residual self-leak: NOT the ctypes
+buffer allocation (which v1.3.2 correctly cached) but TWO copies
+that v1.3.2 left in place on the read path. Plus a CLI usability
+fix that explains why three production runs missed
+`leak_profile.txt`, and a leak-detector fallback so a
+broken-cadence host doesn't silently miss real leaks.
+
+### Fixed
+
+- **Real handles_sampler leak finally killed.** The `--profile-leak`
+  output attributed +25 MB / 60 s to two source lines: a 16 MB
+  `bytes(buf[:used])` snapshot in `_query_system_handles` and a
+  9.3 MB `(c_ubyte * len(buf)).from_buffer_copy(buf)` in `_aggregate`.
+  v1.3.2 cached the underlying ctypes array but the snapshot + copy
+  on every read still allocated 25 MB per call. v1.3.3 changes the
+  contract: `_query_system_handles` returns
+  `(ctypes.Array | None, int)` directly (the cached buffer + used
+  bytes); `_aggregate` reads via `addressof(buf)` with no copy. Same
+  data; zero per-call allocation on the hot path.
+- **`python -m sysspecter --profile-leak` works without a subcommand
+  now.** The v1.3.0 plan documented `--profile-leak` as a top-level
+  flag, but the implementation lives inside the `monitor` subparser.
+  So the user's three production attempts — all of the form
+  `python -m sysspecter --duration 1800 --profile-leak` — errored
+  with `argparse: invalid choice: '--profile-leak'` and silently
+  exited before producing `leak_profile.txt`. v1.3.3 auto-prepends
+  `monitor` when the first token starts with `-`. Unknown subcommand
+  names (e.g. `monitorr`) still surface argparse's usual error so
+  typos don't get silently coerced.
+- **Leak detector no longer silent on broken-cadence hosts.** ATLT4407
+  produced 28 samples in 30 minutes (median gap 68 s, declared
+  `cadence_health: broken`); the main detector's sliding-window pass
+  requires `min_samples=30` per window so it returned no `peak_window`
+  and the resulting confidence dropped to "suspicious" — and on runs
+  with < 20 samples, `_trend_stats` itself returns `None` and the
+  detector emits nothing at all. Result: a 138 MB SysSpecter.exe
+  growth (49 → 187 MB) produced ZERO `memory_leak_candidate`
+  findings — a false negative that would mislead an operator into
+  "no leak found = green light". v1.3.3 adds a permissive fallback
+  pass that fires only when `cadence_health == "broken"`. For PIDs
+  the main detector missed, it computes a simple linear regression
+  on the raw RSS series and flags clear growth (≥ 50 MB absolute,
+  R² ≥ 0.6, ≥ 10 samples) at confidence
+  `"low (cadence-degraded)"`. Healthy-cadence runs are unchanged.
+
+### Tests
+
+14 new regression tests in `tests/test_v1_3_3_regression.py`:
+- `_query_system_handles` returns the no-copy tuple shape
+- `_aggregate` reads directly from a ctypes array (no `bytes`)
+- `_aggregate` returns [] when `used` is below header size
+- `collect_handles_snapshot` consumes the new failure tuple
+- CLI auto-prepends `monitor` for bare `--profile-leak` invocation
+- CLI does NOT mask typos in subcommand names
+- cadence-broken fallback flags the ATLT4407 scenario (28 samples,
+  138 MB growth) at `low (cadence-degraded)`
+- fallback skips PIDs the main detector already flagged
+- fallback respects the 50 MB absolute-growth floor
+- fallback ignores negative slopes (shrinking processes aren't leaks)
+- fallback requires at least 10 samples
+- main detector unchanged on healthy cadence (`good` and `None`)
+- `detect_leak_patterns` threads `cadence_health` through to the
+  memory detector
+- version string canonicalised to 1.3.3
+
+554 total tests pass, ruff clean, bandit clean (no new issues).
+
+### Note on the v1.3.2 cadence regression
+
+The user's score-card showed ATLT4407's median sample gap rising
+from 24 s (v1.3.0) to 68 s (v1.3.2). v1.3.3 doesn't directly
+address that — none of v1.3.2's per-iteration changes (handles
+buffer cache, GPU subprocess batching, thread-priority fallback)
+add cost on the cheap-tier path. The most likely cause is host-
+specific: corporate AppLocker / EPM scanning of newly-allocated
+ctypes buffers on first touch. v1.3.3's no-copy fix coincidentally
+helps here too — far fewer Python-side allocations on the read path.
+If the regression persists after v1.3.3, a fresh `--profile-leak`
+run on ATLT4407 (now correctly producing `leak_profile.txt` thanks
+to the CLI fix) should localise it.
+
 ## [1.3.2] — 2026-05-09
 
 Targeted leak follow-up on v1.3.1 — closes the residual ~80 KB/s

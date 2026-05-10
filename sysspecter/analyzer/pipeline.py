@@ -216,7 +216,18 @@ def analyze_run(
     slowdowns = detect_slowdown_windows(rd.system_rows, rd.process_rows, rd.latency_rows, th)
 
     logger.info("detecting leak patterns")
-    leaks = detect_leak_patterns(rd.process_rows, th)
+    # v1.3.3: pass cadence_health so the leak detector can run a
+    # permissive fallback on broken-cadence runs (where the main
+    # detector goes silent because too few samples per sliding window).
+    cadence_health = None
+    cq = rd.manifest.get("cadence_quality") if isinstance(rd.manifest, dict) else None
+    if isinstance(cq, dict):
+        cadence_health = cq.get("cadence_health")
+    if cadence_health is None and isinstance(rd.manifest, dict):
+        cadence_health = rd.manifest.get("cadence_health")
+    leaks = detect_leak_patterns(
+        rd.process_rows, th, cadence_health=cadence_health,
+    )
 
     # Field-review A2: deadlock-after-leak signature.
     logger.info("detecting deadlock-suspected processes")

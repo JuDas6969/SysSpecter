@@ -302,21 +302,29 @@ def reset_type_cache() -> None:
 
 # ---- collection --------------------------------------------------------
 
-def _query_system_handles() -> bytes:
-    """Return the raw SystemExtendedHandleInformation buffer.
+def _query_system_handles() -> tuple[ctypes.Array | None, int]:
+    """Return (cached_buffer, used_bytes).
 
-    Empty bytes on any failure path. Caller must handle that.
+    `(None, 0)` on any failure path. Caller must handle that.
 
-    v1.3.2: reuse a module-level cached 16 MB ctypes array. The v1.3.0
-    / v1.3.1 path allocated a fresh array per call (every 60 s on a
-    typical desktop), which is the most likely residual self-leak
-    source — large repeated allocations fragment the Windows process
-    heap so HeapFree never returns memory to the OS.
+    v1.3.3: the buffer is the module-level `_HANDLES_BUF` cache
+    introduced in v1.3.2. We deliberately DO NOT snapshot it to a
+    fresh `bytes` object — the v1.3.2 path called `bytes(buf[:used])`
+    here, which allocated a 16 MB Python `bytes` object on every
+    call. The `--profile-leak` run on ATLT4407 attributed +16,387 KB
+    growth in 60 s exactly to that line — the largest single growth
+    site in the entire process. Now we return the cached array
+    directly; `_aggregate` reads from it via `addressof`.
+
+    The returned array is owned by this module and must NOT be
+    mutated or held across a subsequent `_query_system_handles`
+    call (the cache may be re-allocated on size growth). All current
+    callers consume the result synchronously, so this is safe.
     """
     global _HANDLES_BUF, _HANDLES_BUF_SIZE
     nt = _ntdll()
     if nt is None:
-        return b""
+        return None, 0
 
     # Start at 16 MB which fits a desktop with up to ~700 k handles.
     # Double up to 256 MB ceiling.
@@ -335,7 +343,7 @@ def _query_system_handles() -> bytes:
             )
         except OSError as e:
             _log.debug("NtQuerySystemInformation failed: %s", e)
-            return b""
+            return None, 0
         if status in (_STATUS_INFO_LENGTH_MISMATCH, _STATUS_BUFFER_OVERFLOW):
             buf_size *= 2
             # Force a re-allocation for the next loop iteration.
@@ -344,44 +352,43 @@ def _query_system_handles() -> bytes:
             continue
         if status != _STATUS_SUCCESS:
             _log.debug("NtQuerySystemInformation status=0x%08x", status & 0xFFFFFFFF)
-            return b""
-        # Snapshot the relevant prefix into immutable bytes so the
-        # caller can release the cached ctypes buffer reference cleanly
-        # (the cached buffer itself stays alive at module scope).
+            return None, 0
         used = ret_len.value or buf_size
-        return bytes(buf[:used])
+        return buf, used
     _log.debug("NtQuerySystemInformation buffer kept growing past %d bytes; aborting",
                _MAX_BUFFER_BYTES)
-    return b""
+    return None, 0
 
 
-def _aggregate(buf: bytes) -> list[HandleCount]:
+def _aggregate(buf: ctypes.Array, used: int) -> list[HandleCount]:
     """Walk the buffer and aggregate (pid, type_index) → count.
 
     Returns one HandleCount per (pid, type_name) pair. Resolves the
     type index to a human-readable name. Caller filters / caps further.
+
+    v1.3.3: reads directly from the cached ctypes array. The v1.3.2
+    path called `(c_ubyte * len(buf)).from_buffer_copy(buf)` here,
+    which allocated yet another 16 MB ctypes array per call (the
+    second-largest growth site identified by `--profile-leak`,
+    +9,310 KB in 60 s). We use `addressof(buf)` directly since the
+    cached buffer is itself a contiguous ctypes array.
     """
-    if len(buf) < sizeof(_SYSTEM_HANDLE_INFORMATION_EX):
-        return []
     header_size = sizeof(_SYSTEM_HANDLE_INFORMATION_EX)
     entry_size = sizeof(_SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX)
-
-    # The first ULONG_PTR is NumberOfHandles. On 64-bit Windows that
-    # is 8 bytes; on 32-bit Python on 32-bit Windows it's 4. We use
-    # `c_void_p` so ctypes picks the right width.
-    array = (ctypes.c_ubyte * len(buf)).from_buffer_copy(buf)
-    base = addressof(array)
-    header = cast(array, POINTER(_SYSTEM_HANDLE_INFORMATION_EX)).contents
+    if used < header_size:
+        return []
+    base = addressof(buf)
+    header = cast(buf, POINTER(_SYSTEM_HANDLE_INFORMATION_EX)).contents
     n = int(header.NumberOfHandles or 0)
     if n <= 0:
         return []
-    counts: dict[tuple[int, int], int] = {}
-    EntryArr = _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX * n
-    if header_size + n * entry_size > len(buf):
+    if header_size + n * entry_size > used:
         # Truncated buffer — bail rather than read past the end.
         _log.debug("handle buffer shorter than declared (got %d, need %d)",
-                   len(buf), header_size + n * entry_size)
+                   used, header_size + n * entry_size)
         return []
+    counts: dict[tuple[int, int], int] = {}
+    EntryArr = _SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX * n
     entries = EntryArr.from_address(base + header_size)
     for i in range(n):
         e = entries[i]
@@ -417,10 +424,10 @@ def collect_handles_snapshot(
       - NtQuerySystemInformation fails (locked-down host, sandbox)
       - the call succeeds but reports zero handles
     """
-    raw = _query_system_handles()
-    if not raw:
+    buf, used = _query_system_handles()
+    if buf is None or used == 0:
         return []
-    rows = _aggregate(raw)
+    rows = _aggregate(buf, used)
     if not rows:
         return []
     # Cap to top-N by total handles per PID.

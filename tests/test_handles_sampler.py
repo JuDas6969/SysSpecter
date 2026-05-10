@@ -51,7 +51,7 @@ def test_reset_type_cache_clears_in_place() -> None:
 
 def _build_handle_info_buffer(
     rows: list[tuple[int, int]],
-) -> bytes:
+) -> tuple[ctypes.Array, int]:
     """Build a fake SystemExtendedHandleInformation buffer.
 
     `rows` is a list of (pid, object_type_index) tuples. The other
@@ -60,39 +60,47 @@ def _build_handle_info_buffer(
     Mirrors the real kernel layout:
         SYSTEM_HANDLE_INFORMATION_EX header (NumberOfHandles + Reserved)
         followed by NumberOfHandles × SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX.
+
+    v1.3.3: returns the ctypes array AND the used-byte count, matching
+    the new `_query_system_handles` contract — `_aggregate` no longer
+    accepts `bytes`, it reads directly from the cached ctypes buffer.
     """
     n = len(rows)
     header_size = sizeof(hs._SYSTEM_HANDLE_INFORMATION_EX)
     entry_size = sizeof(hs._SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX)
     total = header_size + n * entry_size
-    buf = (ctypes.c_ubyte * total)()
+    # Allocate at least header_size so the empty-rows case still has
+    # room for the NumberOfHandles=0 header.
+    alloc = max(total, header_size)
+    buf = (ctypes.c_ubyte * alloc)()
     header = ctypes.cast(buf, ctypes.POINTER(hs._SYSTEM_HANDLE_INFORMATION_EX)).contents
     header.NumberOfHandles = ctypes.c_void_p(n)
     header.Reserved = ctypes.c_void_p(0)
-    EntryArr = hs._SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX * n
-    entries = EntryArr.from_address(ctypes.addressof(buf) + header_size)
-    for i, (pid, type_idx) in enumerate(rows):
-        e = entries[i]
-        e.Object = ctypes.c_void_p(0)
-        e.UniqueProcessId = ctypes.c_void_p(pid)
-        e.HandleValue = ctypes.c_void_p(i + 1)
-        e.GrantedAccess = 0
-        e.CreatorBackTraceIndex = 0
-        e.ObjectTypeIndex = type_idx
-        e.HandleAttributes = 0
-        e.Reserved = 0
-    return bytes(buf)
+    if n:
+        EntryArr = hs._SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX * n
+        entries = EntryArr.from_address(ctypes.addressof(buf) + header_size)
+        for i, (pid, type_idx) in enumerate(rows):
+            e = entries[i]
+            e.Object = ctypes.c_void_p(0)
+            e.UniqueProcessId = ctypes.c_void_p(pid)
+            e.HandleValue = ctypes.c_void_p(i + 1)
+            e.GrantedAccess = 0
+            e.CreatorBackTraceIndex = 0
+            e.ObjectTypeIndex = type_idx
+            e.HandleAttributes = 0
+            e.Reserved = 0
+    return buf, total
 
 
 def test_aggregate_groups_by_pid_and_type() -> None:
     """Two PIDs, two types each; counts must sum correctly."""
     hs._type_index_to_name = {7: "File", 11: "Event"}
-    buf = _build_handle_info_buffer([
+    buf, used = _build_handle_info_buffer([
         (100, 7), (100, 7), (100, 7),  # PID 100: 3× File
         (100, 11),                      # PID 100: 1× Event
         (200, 7), (200, 7),             # PID 200: 2× File
     ])
-    rows = hs._aggregate(buf)
+    rows = hs._aggregate(buf, used)
     by_key = {(r.pid, r.type_name): r.count for r in rows}
     assert by_key == {
         (100, "File"): 3,
@@ -105,25 +113,29 @@ def test_aggregate_skips_pid_zero() -> None:
     """PID 0 is the System Idle Process — its handle table is huge and
     not actionable; the aggregator drops it."""
     hs._type_index_to_name = {7: "File"}
-    buf = _build_handle_info_buffer([(0, 7), (0, 7), (100, 7)])
-    rows = hs._aggregate(buf)
+    buf, used = _build_handle_info_buffer([(0, 7), (0, 7), (100, 7)])
+    rows = hs._aggregate(buf, used)
     pids = {r.pid for r in rows}
     assert pids == {100}
 
 
 def test_aggregate_handles_empty_buffer() -> None:
-    assert hs._aggregate(b"") == []
-    # Also: a header that says "0 handles" is fine.
-    buf = _build_handle_info_buffer([])
-    assert hs._aggregate(buf) == []
+    # A header that says "0 handles" produces an empty result.
+    buf, used = _build_handle_info_buffer([])
+    assert hs._aggregate(buf, used) == []
+    # A `used` length below header size also produces []. Use a real
+    # ctypes array so the cast inside _aggregate doesn't crash if
+    # `used` somehow exceeds 0; we pass used=0 to short-circuit.
+    tiny = (ctypes.c_ubyte * 8)()
+    assert hs._aggregate(tiny, 0) == []
 
 
 def test_aggregate_resolves_unknown_type_index_to_placeholder() -> None:
     """If NtQueryObject didn't populate the cache, every entry still
     aggregates correctly with a `TypeIndex_<n>` name — no crash."""
     hs._type_index_to_name = {}  # empty cache, but populated (non-None)
-    buf = _build_handle_info_buffer([(100, 99), (100, 99)])
-    rows = hs._aggregate(buf)
+    buf, used = _build_handle_info_buffer([(100, 99), (100, 99)])
+    rows = hs._aggregate(buf, used)
     assert len(rows) == 1
     assert rows[0].type_name == "TypeIndex_99"
     assert rows[0].count == 2
@@ -158,7 +170,7 @@ def test_top_n_pids_zero_keeps_everything(monkeypatch) -> None:
 def test_collect_handles_snapshot_returns_empty_when_query_fails(monkeypatch) -> None:
     """Soft-degrade: when the kernel call returns nothing, return []
     instead of raising."""
-    monkeypatch.setattr(hs, "_query_system_handles", lambda: b"")
+    monkeypatch.setattr(hs, "_query_system_handles", lambda: (None, 0))
     assert hs.collect_handles_snapshot() == []
 
 

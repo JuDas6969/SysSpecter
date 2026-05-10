@@ -577,6 +577,12 @@ def _cmd_split(args: argparse.Namespace) -> int:
     return 0
 
 
+_SUBCOMMANDS = frozenset({
+    "monitor", "compare", "stop", "report", "inspect",
+    "sanitize", "gui", "doctor", "split", "aggregate",
+})
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # When invoked with no arguments (e.g. a double-clicked USB executable)
     # fall back to launching the GUI rather than printing argparse usage.
@@ -584,6 +590,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv = sys.argv[1:]
     if not argv:
         argv = ["gui"]
+
+    # v1.3.3 Fix: when invoked with bare flags only (e.g.
+    # `sysspecter --profile-leak --duration 60`), default to the
+    # `monitor` subcommand. The v1.3.0 plan documented `--profile-leak`
+    # as a top-level flag, but the implementation lives inside the
+    # `monitor` subparser, so the user's command errored with
+    # "invalid choice: '--profile-leak'". Three production runs missed
+    # `leak_profile.txt` because of this. Auto-prepend `monitor` when
+    # the first token is a flag rather than a known subcommand.
+    if argv and argv[0].startswith("-") and argv[0] not in ("-h", "--help"):
+        argv = ["monitor", *argv]
+    elif argv and argv[0] not in _SUBCOMMANDS and argv[0] not in ("-h", "--help"):
+        # Unknown first token — let argparse complain in the normal way.
+        # (Don't auto-prepend monitor because the user might have a typo
+        # in a real subcommand name; better to surface that.)
+        pass
 
     parser = _build_parser()
     args = parser.parse_args(argv)
